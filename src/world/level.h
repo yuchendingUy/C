@@ -46,6 +46,8 @@ typedef struct mcc_level_config {
     mcc_regionizer_config region;    /* 全 0 用默认值 */
     /* 每刻推进物理之前调用（游戏逻辑占位），区域线程上执行，可为 NULL */
     void (*tick_hook)(void *ctx, mcc_region *r, mcc_region_world *w);
+    /* 每刻推进物理之后调用（取最新位姿等），区域线程上执行，可为 NULL */
+    void (*post_tick_hook)(void *ctx, mcc_region *r, mcc_region_world *w);
     void *hook_ctx;
     /* 区域销毁时仍留在区域里的子世界（应已随区块卸载保存），为 NULL 时直接释放 */
     void (*sublevel_orphan)(void *ctx, mcc_sublevel *sl);

@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>mcc 测试客户端</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #9cc4e8; font-family: system-ui, sans-serif; }
+  canvas { display: block; touch-action: none; }
+  #ui { position: fixed; left: 10px; top: 10px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  #ui button { font-size: 16px; padding: 8px 14px; border: 0; border-radius: 6px; background: #1f2a37; color: #fff; }
+  #ui button:active { background: #3b4b5f; }
+  #status { position: fixed; left: 10px; bottom: 10px; color: #fff; background: rgba(0,0,0,.45);
+            padding: 6px 10px; border-radius: 6px; font: 13px ui-monospace, monospace; white-space: pre; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <button data-n="1">召唤 1 个</button>
+  <button data-n="20">召唤 20 个</button>
+  <button data-n="100">召唤 100 个</button>
+  <button id="clear">清空</button>
+</div>
+<div id="status">连接中…</div>
+<script type="module">
+import * as THREE from './three.module.min.js';
+
+/* ---------------- 场景 ---------------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9cc4e8);
+scene.fog = new THREE.Fog(0x9cc4e8, 120, 260);
+const camera = new THREE.PerspectiveCamera(65, 1, 0.1, 600);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x556070, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(40, 100, 25);
+scene.add(sun);
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+resize();
+
+/* ---------------- 视角：拖动旋转，双指/滚轮缩放，右键/三指平移 ---------------- */
+const target = new THREE.Vector3(8, 64, 0);
+let yaw = 0.9, pitch = 0.55, dist = 70;
+const pointers = new Map();
+let pinchDist = 0;
+renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
+renderer.domElement.addEventListener('pointerdown', e => { pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, b: e.button }); renderer.domElement.setPointerCapture(e.pointerId); });
+renderer.domElement.addEventListener('pointerup', e => { pointers.delete(e.pointerId); pinchDist = 0; });
+renderer.domElement.addEventListener('pointercancel', e => { pointers.delete(e.pointerId); pinchDist = 0; });
+renderer.domElement.addEventListener('pointermove', e => {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  p.x = e.clientX; p.y = e.clientY;
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinchDist) dist = Math.min(300, Math.max(5, dist * pinchDist / d));
+    pinchDist = d;
+    return;
+  }
+  if (p.b === 2 || e.shiftKey || pointers.size >= 3) {
+    const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+    const fwd = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+    target.addScaledVector(right, -dx * dist * 0.002).addScaledVector(fwd, -dy * dist * 0.002);
+  } else {
+    yaw -= dx * 0.005;
+    pitch = Math.min(1.5, Math.max(-0.2, pitch + dy * 0.005));
+  }
+});
+renderer.domElement.addEventListener('wheel', e => { dist = Math.min(300, Math.max(5, dist * Math.exp(e.deltaY * 0.001))); e.preventDefault(); }, { passive: false });
+
+/* ---------------- 几何：单位方块，原点在方块的最小角 ---------------- */
+const boxGeo = new THREE.BoxGeometry(1, 1, 1).translate(0.5, 0.5, 0.5);
+const solidMat = new THREE.MeshLambertMaterial();
+const tmpM = new THREE.Matrix4(), tmpC = new THREE.Color();
+
+function instanced(geo, mat, list) {
+  const m = new THREE.InstancedMesh(geo, mat, list.length);
+  list.forEach((b, i) => {
+    m.setMatrixAt(i, tmpM.makeTranslation(b[0], b[1], b[2]));
+    m.setColorAt(i, tmpC.setRGB(b[3] / 255, b[4] / 255, b[5] / 255, THREE.SRGBColorSpace));
+  });
+  m.instanceMatrix.needsUpdate = true;
+  if (m.instanceColor) m.instanceColor.needsUpdate = true;
+  return m;
+}
+
+/* 地形：每个区块合成一个网格，只画露在外面的面（服务端给出每个方块的露面标志） */
+const terrainMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+const waterMat = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: 0.55, depthWrite: false });
+const FACE = [ // 法线, 4 个角（方块内 0~1 坐标）, 明暗
+  [[-1, 0, 0], [[0,0,1],[0,1,1],[0,1,0],[0,0,0]], 0.80], [[1, 0, 0], [[1,0,0],[1,1,0],[1,1,1],[1,0,1]], 0.80],
+  [[0, -1, 0], [[0,0,0],[1,0,0],[1,0,1],[0,0,1]], 0.55], [[0, 1, 0], [[0,1,1],[1,1,1],[1,1,0],[0,1,0]], 1.00],
+  [[0, 0, -1], [[0,0,0],[0,1,0],[1,1,0],[1,0,0]], 0.70], [[0, 0, 1], [[1,0,1],[1,1,1],[0,1,1],[0,0,1]], 0.70],
+];
+function chunkMesh(list, water) {
+  const pos = [], nor = [], col = [], idx = [];
+  for (const b of list) {
+    for (let f = 0; f < 6; f++) {
+      if (!(b[6] >> f & 1)) continue;
+      const [n, corners, shade] = FACE[f];
+      const base = pos.length / 3;
+      for (const c of corners) {
+        pos.push(b[0] + c[0], b[1] + (water && c[1] ? 0.88 : c[1]), b[2] + c[2]);
+        nor.push(n[0], n[1], n[2]);
+        tmpC.setRGB(b[3] / 255 * shade, b[4] / 255 * shade, b[5] / 255 * shade, THREE.SRGBColorSpace);
+        col.push(tmpC.r, tmpC.g, tmpC.b);
+      }
+      idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(idx);
+  return new THREE.Mesh(g, water ? waterMat : terrainMat);
+}
+
+/* ---------------- 结构：插值缓冲 ---------------- */
+/* 服务端每刻（50ms）只发正在动的结构，每条带服务端时间。
+ * 渲染时间 = 估计的服务端当前时间 - DELAY，在前后两个采样之间插值：位置线性、旋转球面插值。
+ * 不外推：采样用完（结构睡着了）就停在最后一个位置。 */
+const DELAY = 100;
+let clockOffset = null;          // 服务端时间 - 本地时间
+const bodies = new Map();        // id → { group, inner, samples: [{t, p, q, com}] }
+let nBlocks = 0;
+
+function addShape(id, blocks) {
+  removeBody(id);
+  const group = new THREE.Group(), inner = new THREE.Group();
+  inner.add(instanced(boxGeo, solidMat, blocks));
+  group.add(inner);
+  group.visible = false;         // 收到第一个位姿再显示
+  scene.add(group);
+  bodies.set(id, { group, inner, samples: [], n: blocks.length });
+  nBlocks += blocks.length;
+}
+
+function removeBody(id) {
+  const b = bodies.get(id);
+  if (!b) return;
+  scene.remove(b.group);
+  b.inner.children[0].dispose();
+  nBlocks -= b.n;
+  bodies.delete(id);
+}
+
+function addSample(id, s) {
+  const b = bodies.get(id);
+  if (!b) return;
+  const S = b.samples;
+  if (S.length && s.t <= S[S.length - 1].t) return;
+  S.push(s);
+  if (S.length > 40) S.splice(0, S.length - 40);
+}
+
+const pA = new THREE.Vector3(), pB = new THREE.Vector3(), qI = new THREE.Quaternion();
+function interpolate(renderTime) {
+  for (const b of bodies.values()) {
+    const S = b.samples;
+    if (!S.length) continue;
+    // 丢掉渲染时间之前、已经用不到的采样（保留一个作为插值起点）
+    while (S.length > 2 && S[1].t <= renderTime) S.shift();
+    let a = S[0], c = S.length > 1 ? S[1] : S[0];
+    let f = 0;
+    if (renderTime <= a.t) c = a;
+    else if (renderTime >= c.t) { a = c; }
+    else f = (renderTime - a.t) / (c.t - a.t);
+    pA.fromArray(a.p); pB.fromArray(c.p);
+    b.group.position.lerpVectors(pA, pB, f);
+    qI.slerpQuaternions(a.q, c.q, f);
+    b.group.quaternion.copy(qI);
+    b.inner.position.set(-(a.com[0] + (c.com[0] - a.com[0]) * f), -(a.com[1] + (c.com[1] - a.com[1]) * f),
+                         -(a.com[2] + (c.com[2] - a.com[2]) * f));
+    b.group.visible = true;
+  }
+}
+
+/* ---------------- 网络 ---------------- */
+let bytesIn = 0, posesIn = 0;
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { status.textContent = '已连接'; };
+  ws.onclose = () => { status.textContent = '连接断开，2 秒后重连'; for (const id of [...bodies.keys()]) removeBody(id); setTimeout(connect, 2000); };
+  ws.onmessage = e => {
+    const dv = new DataView(e.data);
+    bytesIn += e.data.byteLength;
+    const type = dv.getUint8(0);
+    if (type === 1) {                          // 地形区块
+      const cx = dv.getInt32(1, true), cz = dv.getInt32(5, true), n = dv.getUint32(9, true);
+      const solid = [], water = [];
+      for (let i = 0, o = 13; i < n; i++, o += 8) {
+        const flags = dv.getUint8(o + 7);
+        const b = [cx * 16 + dv.getUint8(o), dv.getInt16(o + 2, true), cz * 16 + dv.getUint8(o + 1),
+                   dv.getUint8(o + 4), dv.getUint8(o + 5), dv.getUint8(o + 6), flags & 63];
+        (flags & 64 ? water : solid).push(b);
+      }
+      if (solid.length) scene.add(chunkMesh(solid, false));
+      if (water.length) scene.add(chunkMesh(water, true));
+    } else if (type === 2) {                   // 结构形状
+      const id = dv.getInt32(1, true), n = dv.getUint32(5, true), blocks = [];
+      for (let i = 0, o = 9; i < n; i++, o += 9)
+        blocks.push([dv.getInt16(o, true), dv.getInt16(o + 2, true), dv.getInt16(o + 4, true),
+                     dv.getUint8(o + 6), dv.getUint8(o + 7), dv.getUint8(o + 8)]);
+      addShape(id, blocks);
+    } else if (type === 3) {                   // 位姿批次
+      const t = dv.getFloat64(1, true), n = dv.getUint32(9, true);
+      const off = t - performance.now();
+      // 取最大偏移 = 最早到达的那次网络延迟；慢慢回落，跟上两边时钟的漂移
+      clockOffset = clockOffset === null ? off : Math.max(off, clockOffset - 0.5);
+      for (let i = 0, o = 13; i < n; i++, o += 56) {      // 每条 56 字节
+        addSample(dv.getInt32(o, true), {
+          t,
+          p: [dv.getFloat64(o + 4, true), dv.getFloat64(o + 12, true), dv.getFloat64(o + 20, true)],
+          q: new THREE.Quaternion(dv.getFloat32(o + 28, true), dv.getFloat32(o + 32, true), dv.getFloat32(o + 36, true), dv.getFloat32(o + 40, true)),
+          com: [dv.getFloat32(o + 44, true), dv.getFloat32(o + 48, true), dv.getFloat32(o + 52, true)],
+        });
+      }
+      posesIn += n;
+    } else if (type === 4) {                   // 移除结构
+      removeBody(dv.getInt32(1, true));
+    }
+  };
+  window.send = cmd => { if (ws.readyState === 1) ws.send(cmd); };
+}
+const status = document.getElementById('status');
+window.__mcc = { bodies, interpolate, get clockOffset() { return clockOffset; } };
+connect();
+document.querySelectorAll('#ui button[data-n]').forEach(b =>
+  b.onclick = () => send(`spawn ${target.x.toFixed(1)} ${target.z.toFixed(1)} ${b.dataset.n}`));
+document.getElementById('clear').onclick = () => send('clear');
+
+/* ---------------- 主循环 ---------------- */
+let frames = 0, lastStat = performance.now();
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (clockOffset !== null) interpolate(now + clockOffset - DELAY);
+  camera.position.set(target.x + dist * Math.cos(pitch) * Math.sin(yaw), target.y + dist * Math.sin(pitch),
+                      target.z + dist * Math.cos(pitch) * Math.cos(yaw));
+  camera.lookAt(target);
+  renderer.render(scene, camera);
+  frames++;
+  if (now - lastStat > 1000) {
+    const s = (now - lastStat) / 1000;
+    status.textContent = `结构 ${bodies.size} 个（${nBlocks} 方块）  ${(frames / s).toFixed(0)} 帧/秒\n` +
+                         `位姿 ${(posesIn / s).toFixed(0)} 条/秒  下行 ${(bytesIn / s / 1024).toFixed(1)} KB/秒`;
+    frames = 0; bytesIn = 0; posesIn = 0; lastStat = now;
+  }
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

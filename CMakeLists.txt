@@ -38,6 +38,11 @@ file(GLOB_RECURSE MCC_CORE_SRC src/core/*.c src/region/*.c src/world/*.c src/cre
 add_library(mcc_core STATIC ${MCC_CORE_SRC})
 target_link_libraries(mcc_core PUBLIC box3d Threads::Threads m)
 
+# 带简易测试客户端（浏览器）的调试服务端
+add_executable(mcc_debug src/debug/main.c src/debug/viewer.c)
+target_link_libraries(mcc_debug mcc_core)
+target_compile_definitions(mcc_debug PRIVATE MCC_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
 enable_testing()
 file(GLOB MCC_TESTS tests/test_*.c)
 foreach(t ${MCC_TESTS})

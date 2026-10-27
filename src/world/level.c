@@ -173,6 +173,7 @@ static void level_tick(void *ctx, mcc_region *r, uint64_t start) {
         double dt = 0.05 / lv->cfg.phys_substeps;
         for (int k = 0; k < lv->cfg.phys_substeps; k++) phys_scene_step(w->phys, dt);
     }
+    if (lv->cfg.post_tick_hook) lv->cfg.post_tick_hook(lv->cfg.hook_ctx, r, w);
     w->ticks++;
 }
 
