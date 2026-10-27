@@ -59,6 +59,15 @@ static void bench(int n, int ticks) {
         phys_scene_step(s, 1.0 / 40.0);
         phys_scene_step(s, 1.0 / 40.0);
         ms[k] = (mcc_nanotime() - t0) / 1e6;
+        /* MCC_BENCH_TIMELINE=1：每秒打印醒着的结构数与这一秒的平均每刻耗时 */
+        if (getenv("MCC_BENCH_TIMELINE") && k % 20 == 19) {
+            double sec = 0;
+            for (int j = k - 19; j <= k; j++) sec += ms[j];
+            int moving = 0;
+            for (int i = 0; i < n; i++) moving += speed(s, i + 1) > 0.15;
+            mcc_info("    第 %2d 秒：醒着 %5d 个（其中速度超过休眠阈值 %5d 个），平均每刻 %.2fms", (k + 1) / 20,
+                     b3World_GetAwakeBodyCount(phys_scene_world(s)), moving, sec / 20);
+        }
     }
     double sum = 0, mx = 0;
     for (int k = 0; k < ticks; k++) { sum += ms[k]; if (ms[k] > mx) mx = ms[k]; }

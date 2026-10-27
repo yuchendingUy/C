@@ -2526,6 +2526,51 @@ bool b3Body_IsFastRotationAllowed( b3BodyId bodyId )
 	return ( body->flags & b3_allowFastRotation ) != 0;
 }
 
+// mcc: drop the recycling cache of every contact on this body
+void b3InvalidateBodyContacts( b3World* world, b3Body* body )
+{
+	int edgeKey = body->headContactKey;
+	while ( edgeKey != B3_NULL_INDEX )
+	{
+		int contactId = edgeKey >> 1;
+		int edgeIndex = edgeKey & 1;
+
+		b3Contact* contact = b3Array_Get( world->contacts, contactId );
+		contact->flags &= ~b3_relativeTransformValid;
+
+		edgeKey = contact->edges[edgeIndex].nextKey;
+	}
+}
+
+// mcc: recompute the body extents used by contact recycling after a shape changed size
+void b3RefreshBodyExtents( b3World* world, b3Body* body )
+{
+	b3BodySim* bodySim = b3GetBodySim( world, body );
+	bodySim->minExtent = B3_HUGE;
+	bodySim->maxExtent = b3Vec3_zero;
+	int shapeId = body->headShapeId;
+	while ( shapeId != B3_NULL_INDEX )
+	{
+		const b3Shape* s = b3Array_Get( world->shapes, shapeId );
+		b3ShapeExtent extent = b3ComputeShapeExtent( s, bodySim->localCenter );
+		bodySim->minExtent = b3MinFloat( bodySim->minExtent, extent.minExtent );
+		bodySim->maxExtent = b3Max( bodySim->maxExtent, extent.maxExtent );
+		shapeId = s->nextShapeId;
+	}
+}
+
+void b3Body_InvalidateContacts( b3BodyId bodyId )
+{
+	b3World* world = b3GetUnlockedWorld( bodyId.world0 );
+	if ( world == NULL )
+	{
+		return;
+	}
+
+	b3Body* body = b3GetBodyFullId( world, bodyId );
+	b3InvalidateBodyContacts( world, body );
+}
+
 void b3Body_EnableContactRecycling( b3BodyId bodyId, bool flag )
 {
 	b3World* world = b3GetUnlockedWorld( bodyId.world0 );

@@ -2530,4 +2530,10 @@ void b3Shape_SetVoxelBounds( b3ShapeId shapeId, b3AABB localBounds )
 	bool wakeBodies = true;
 	bool destroyProxy = false;
 	b3ResetProxy( world, shape, wakeBodies, destroyProxy );
+
+	// mcc: the body extent bounds rotation for contact recycling, and the cached manifolds
+	// were built for the old block range
+	b3Body* body = b3Array_Get( world->bodies, shape->bodyId );
+	b3RefreshBodyExtents( world, body );
+	b3InvalidateBodyContacts( world, body );
 }

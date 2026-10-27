@@ -523,8 +523,13 @@ static uint64_t body_volume(const phys_body *b) {
     return (uint64_t)(b->bmax[0] - b->bmin[0] + 1) * (uint64_t)(b->bmax[1] - b->bmin[1] + 1) * (uint64_t)(b->bmax[2] - b->bmin[2] + 1);
 }
 
-const b3VoxelManifold *phys_voxel_manifolds(const b3VoxelQuery *q, int *count, void *ctx) {
+const b3VoxelManifold *phys_voxel_manifolds(const b3VoxelQuery *q_in, int *count, void *ctx) {
     phys_scene *scene = ctx;
+    /* Box3D 回收接触时允许两侧相对移动到回收距离才重新生成。
+     * 方块结构在这段移动里可能有新的方块对碰上，所以生成时就把回收距离内的点都收进来 */
+    b3VoxelQuery qv = *q_in;
+    qv.speculativeDistance = MCC_MAX(qv.speculativeDistance, B3_CONTACT_RECYCLE_DISTANCE);
+    const b3VoxelQuery *q = &qv;
     uint64_t t_start = mcc_nanotime();
     scratch *sc = &t_s;
     scratch_reset(sc);

@@ -264,9 +264,10 @@ void b3CreateContact( b3World* world, b3Shape* shapeA, b3Shape* shapeB, int chil
 	}
 
 	// Disabling speculative collision also disables recycling.
-	// mcc: voxel contacts are never recycled because block content can change without motion.
+	// mcc: voxel contacts are recycled too. Block content can change without motion, so the owner
+	// calls b3Body_InvalidateContacts whenever blocks under or inside a body change.
 	if ( ( bodyA->flags & b3_enableContactRecycling ) != 0 && ( bodyB->flags & b3_enableContactRecycling ) != 0 &&
-		 ( contact->flags & b3_enableSpeculativePoints ) != 0 && shapeA->type != b3_voxelShape )
+		 ( contact->flags & b3_enableSpeculativePoints ) != 0 )
 	{
 		contact->flags |= b3_contactRecycleFlag;
 	}

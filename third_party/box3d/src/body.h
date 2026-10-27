@@ -241,6 +241,10 @@ bool b3ShouldBodiesCollide( b3World* world, b3Body* bodyA, b3Body* bodyB );
 bool b3IsBodyAwake( b3World* world, b3Body* body );
 
 b3BodySim* b3GetBodySim( b3World* world, b3Body* body );
+
+// mcc: voxel support
+void b3InvalidateBodyContacts( b3World* world, b3Body* body );
+void b3RefreshBodyExtents( b3World* world, b3Body* body );
 b3BodyState* b3GetBodyState( b3World* world, b3Body* body );
 
 // careful calling this because it can invalidate body, state, joint, and contact pointers

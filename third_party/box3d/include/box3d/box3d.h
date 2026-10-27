@@ -757,6 +757,10 @@ B3_API bool b3Body_IsFastRotationAllowed( b3BodyId bodyId );
 /// @see b3BodyDef::enableContactRecycling
 B3_API void b3Body_EnableContactRecycling( b3BodyId bodyId, bool flag );
 
+/// mcc: drop the contact recycling cache of this body's contacts. Call when the geometry a voxel
+/// contact was built from changed without the bodies moving (blocks placed or removed).
+B3_API void b3Body_InvalidateContacts( b3BodyId bodyId );
+
 /// Is contact recycling enabled on this body?
 B3_API bool b3Body_IsContactRecyclingEnabled( b3BodyId bodyId );
 

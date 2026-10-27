@@ -112,20 +112,41 @@ static bool collect_body(b3ShapeId shape, void *ctx) {
     return true;
 }
 
-/* 地形方块变化：唤醒包围盒碰到该方块的刚体（查询期间不改动世界，先收集再唤醒） */
-static void terrain_block_changed(void *ctx, int32_t x, int32_t y, int32_t z, mcc_state_t old, mcc_state_t now) {
-    phys_scene *s = ctx;
-    (void)old;
-    (void)now;
-    /* 宽相包围盒是单精度世界坐标，远离原点时有舍入，多留 2 格余量 */
-    b3AABB box = { { (float)x - 2.0f, (float)y - 2.0f, (float)z - 2.0f }, { (float)x + 3.0f, (float)y + 3.0f, (float)z + 3.0f } };
-    s->wake.len = 0;
-    b3World_OverlapAABB(s->world, box, b3DefaultQueryFilter(), collect_body, s);
-    for (size_t i = 0; i < s->wake.len; i++) b3Body_SetAwake(s->wake.data[i], true);
+/* 方块内容变了而刚体没动：Box3D 的接触回收会沿用旧接触，要作废缓存并唤醒 */
+static void touch_body(b3BodyId body) {
+    b3Body_InvalidateContacts(body);
+    b3Body_SetAwake(body, true);
 }
 
-static void terrain_chunk_added(void *ctx, mcc_chunk *c) { cell_acquire(ctx, c->cx, c->cz); }
-static void terrain_chunk_removed(void *ctx, mcc_chunk *c) { cell_release(ctx, c->cx, c->cz); }
+/* 包围盒碰到 [lo, hi] 的刚体全部 touch（查询期间不改动世界，先收集再处理）。
+ * 宽相包围盒是单精度世界坐标，远离原点时有舍入，多留 2 格余量 */
+static void touch_bodies_in(phys_scene *s, double lx, double ly, double lz, double hx, double hy, double hz) {
+    b3AABB box = { { (float)lx - 2.0f, (float)ly - 2.0f, (float)lz - 2.0f }, { (float)hx + 2.0f, (float)hy + 2.0f, (float)hz + 2.0f } };
+    s->wake.len = 0;
+    b3World_OverlapAABB(s->world, box, b3DefaultQueryFilter(), collect_body, s);
+    for (size_t i = 0; i < s->wake.len; i++) touch_body(s->wake.data[i]);
+}
+
+static void terrain_block_changed(void *ctx, int32_t x, int32_t y, int32_t z, mcc_state_t old, mcc_state_t now) {
+    (void)old;
+    (void)now;
+    touch_bodies_in(ctx, x, y, z, x + 1.0, y + 1.0, z + 1.0);
+}
+
+static void touch_chunk_column(phys_scene *s, const mcc_chunk *c) {
+    double x = (double)c->cx * 16, z = (double)c->cz * 16;
+    touch_bodies_in(s, x, (double)c->min_sy * 16, z, x + 16, (double)(c->min_sy + c->nsec) * 16, z + 16);
+}
+
+static void terrain_chunk_added(void *ctx, mcc_chunk *c) {
+    cell_acquire(ctx, c->cx, c->cz);
+    touch_chunk_column(ctx, c);
+}
+
+static void terrain_chunk_removed(void *ctx, mcc_chunk *c) {
+    touch_chunk_column(ctx, c);
+    cell_release(ctx, c->cx, c->cz);
+}
 
 /* 子世界方块变化：结构变了，静止的刚体该重新动起来；质量追踪同步更新 */
 static void body_block_changed(void *ctx, int32_t x, int32_t y, int32_t z, mcc_state_t old, mcc_state_t now) {
@@ -134,19 +155,19 @@ static void body_block_changed(void *ctx, int32_t x, int32_t y, int32_t z, mcc_s
         phys_mass_add(b->mass, x, y, z, old, -1);
         phys_mass_add(b->mass, x, y, z, now, +1);
     }
-    b3Body_SetAwake(b->body, true);
+    touch_body(b->body);
 }
 
 static void body_chunk_added(void *ctx, mcc_chunk *c) {
     phys_body *b = ctx;
     if (b->mass) phys_mass_add_chunk(b->mass, c, +1);
-    b3Body_SetAwake(b->body, true);
+    touch_body(b->body);
 }
 
 static void body_chunk_removed(void *ctx, mcc_chunk *c) {
     phys_body *b = ctx;
     if (b->mass) phys_mass_add_chunk(b->mass, c, -1);
-    b3Body_SetAwake(b->body, true);
+    touch_body(b->body);
 }
 
 /* ------------------------------------------------------------------ */
