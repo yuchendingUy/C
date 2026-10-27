@@ -170,6 +170,7 @@ int main(int argc, char **argv) {
     if (!mcc_blocks_load(p1)) return 1;
     if (!phys_block_colliders_load(p2, p3)) return 1;
     phys_colliders_finalize();
+    if (getenv("MCC_NO_CANON")) phys_set_canonical(false);
     STONE = mcc_block_default_state("stone");
     DIRT = mcc_block_default_state("dirt");
     GRASS = mcc_block_default_state("grass_block");

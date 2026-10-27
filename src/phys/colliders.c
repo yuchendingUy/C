@@ -58,6 +58,9 @@ void phys_colliders_finalize(void) {
                                        (bx->max[2] + bx->min[2]) * 0.5f };
             c->hulls[b] = b3MakeBoxHull(h.x, h.y, h.z);
         }
+        const phys_box *b0 = &c->boxes[0];
+        c->unit = c->nboxes == 1 && b0->min[0] == 0 && b0->min[1] == 0 && b0->min[2] == 0 && b0->max[0] == 1 &&
+                  b0->max[1] == 1 && b0->max[2] == 1;
     }
     g_finalized = true;
     mcc_info("物理碰撞体注册表冻结：%zu 个碰撞体", g_colliders.len);

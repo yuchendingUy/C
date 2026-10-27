@@ -27,6 +27,7 @@ typedef struct phys_collider {
     bool dynamic;         /* 碰撞形状随位置变化（按位置查覆盖表） */
     uint16_t callback;    /* 方块碰撞回调编号，0 无 */
     bool needs_hooks;     /* 摩擦≠1、弹性≠0 或有回调 */
+    bool unit;            /* 恰好一个 0~1 整格碰撞箱（可以合并成大板碰撞） */
 } phys_collider;
 
 /* 体素邻居状态（与 Sable VoxelNeighborhoodState 顺序一致） */

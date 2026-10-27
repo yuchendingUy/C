@@ -142,6 +142,8 @@ void phys_scene_stats(phys_scene *s, phys_stats *out);
 /* 接触生成的统计计数（collide_ns、pairs、manifolds 等）默认关闭：
  * 热路径上的全局原子计数在多核上会互相争抢缓存行。性能测试时打开 */
 void phys_set_stats_enabled(bool on);
+/* 整格大板碰撞（默认开），关掉则全部逐方块逐碰撞箱，用于对比 */
+void phys_set_canonical(bool on);
 
 /* 体素接触生成回调（collide.c） */
 const b3VoxelManifold *phys_voxel_manifolds(const b3VoxelQuery *q, int *count, void *ctx);

@@ -31,6 +31,8 @@
 
 void phys_scene_count(phys_scene *s, uint64_t manifolds, uint64_t pairs);
 static bool g_stats_on;
+static bool g_canonical = true;
+void phys_set_canonical(bool on) { g_canonical = on; }
 void phys_set_stats_enabled(bool on) { g_stats_on = on; }
 void phys_scene_count_time(phys_scene *s, uint64_t ns);
 
@@ -72,16 +74,20 @@ MCC_INLINE bool side_full(vside *v, int32_t x, int32_t y, int32_t z) {
 }
 
 /* 邻居状态（Sable VoxelNeighborhoodState）：按六个邻居是否整块，判断方块处在结构的面、棱、角还是内部 */
-static uint32_t side_neighborhood(vside *v, int32_t x, int32_t y, int32_t z) {
+/* full：六个邻居是否整块，位 0..5 = -x +x -y +y -z +z */
+static uint32_t side_neighborhood(vside *v, int32_t x, int32_t y, int32_t z, uint8_t *full) {
     bool all = true;
     int both = 0;
     const int d[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+    uint8_t m = 0;
     for (int a = 0; a < 3; a++) {
         bool n = side_full(v, x - d[a][0], y - d[a][1], z - d[a][2]);
         bool p = side_full(v, x + d[a][0], y + d[a][1], z + d[a][2]);
+        m |= (uint8_t)((n << (2 * a)) | (p << (2 * a + 1)));
         if (!n || !p) all = false;
         if (n && p) both++;
     }
+    *full = m;
     if (all) return PHYS_VS_INTERIOR;
     if (both == 1) return PHYS_VS_EDGE;
     if (both == 0) return PHYS_VS_CORNER;
@@ -100,13 +106,14 @@ typedef struct { int32_t s[3], d[3]; } block_pair;           /* static 侧方块
 typedef struct {
     const phys_collider *colS, *colD;
     uint8_t stS, stD;            /* 邻居状态，配对时已算好 */
+    uint8_t fullS, fullD;        /* 六个邻居是否整块 */
 } pair_meta;
 /* 一次回调内的方块缓存：被查询侧的同一个方块会和遍历侧很多方块配对，碰撞体与邻居状态只算一次 */
 typedef struct {
     int32_t x, y, z;
     uint32_t gen;
     const phys_collider *col;
-    uint8_t st;
+    uint8_t st, full;
 } memo_ent;
 typedef struct {
     b3Vec3 normal;
@@ -120,6 +127,23 @@ typedef struct {
     uint32_t start, count;     /* 在 points 中的范围（按簇收集后重排） */
 } cluster;
 
+/* parry 的"规范形状"：整格方块沿着有整块邻居的方向无限延伸（再截到对方的范围），
+ * 一整片平地的表层方块都变成同一块大板。两侧规范形状相同的方块对归为一组，只做一次盒子碰撞，
+ * 再把接触点分回真正包含它的那对方块 */
+typedef struct cgroup {
+    int32_t rs[6], rd[6];        /* 两侧规范范围（方块坐标，延伸方向用 INT32_MIN/MAX 表示） */
+    uint32_t first;              /* 第一对的下标（取代表方块） */
+    uint32_t pt0, npts;          /* 在 gpts 中的接触点 */
+    uint32_t sel;                /* 被某对方块认领的点（位） */
+    b3Vec3 normal;               /* A 指向 B，A 局部系 */
+} cgroup;
+typedef struct gpoint {
+    b3Vec3 p;                    /* A 局部系 */
+    float sep;
+    b3FeaturePair fp;
+    uint32_t owner;              /* 认领它的方块对 */
+} gpoint;
+
 typedef struct scratch {
     MCC_VEC(block_pair) pairs;
     MCC_VEC(pair_meta) meta;
@@ -132,6 +156,13 @@ typedef struct scratch {
     cluster clusters[MAX_CLUSTERS];
     int ncluster;
     MCC_VEC(b3VoxelManifold) out;
+    /* 整格大板分组 */
+    MCC_VEC(struct cgroup) groups;
+    MCC_VEC(uint32_t) pair_group;
+    MCC_VEC(struct gpoint) gpts;
+    uint32_t *gtab;
+    uint32_t gtab_cap;
+    MCC_VEC(uint32_t) canon_idx;
 } scratch;
 
 static _Thread_local scratch t_s;
@@ -172,7 +203,8 @@ static const memo_ent *memo_get(scratch *sc, vside *v, int32_t x, int32_t y, int
             e->x = x; e->y = y; e->z = z;
             e->gen = sc->memo_gen;
             e->col = solid_collider(v, x, y, z);
-            e->st = e->col ? (uint8_t)side_neighborhood(v, x, y, z) : PHYS_VS_INTERIOR;
+            e->full = 0;
+            e->st = e->col ? (uint8_t)side_neighborhood(v, x, y, z, &e->full) : PHYS_VS_INTERIOR;
             sc->memo_used++;
             return e;
         }
@@ -289,10 +321,11 @@ size_t phys_find_pairs(vside *t, vside *o, b3Transform xf_to, float prediction, 
                                         /* 碰撞：遍历侧方块先判自身（没有碰撞箱、内部方块直接跳过），再按规则筛对方 */
                                         const phys_collider *colD = NULL;
                                         uint32_t stD = 0;
+                                        uint8_t fullD = 0;
                                         if (!liquid) {
                                             colD = solid_collider(t, d[0], d[1], d[2]);
                                             if (!colD) continue;
-                                            stD = side_neighborhood(t, d[0], d[1], d[2]);
+                                            stD = side_neighborhood(t, d[0], d[1], d[2], &fullD);
                                             if (stD == PHYS_VS_INTERIOR) continue;
                                         }
                                         sc->hits.len = 0;
@@ -303,7 +336,7 @@ size_t phys_find_pairs(vside *t, vside *o, b3Transform xf_to, float prediction, 
                                             if (!liquid) {
                                                 const memo_ent *e = memo_get(sc, o, p.s[0], p.s[1], p.s[2]);
                                                 if (!e->col || can_ignore(e->st, stD)) continue;
-                                                pair_meta m = { e->col, colD, e->st, (uint8_t)stD };
+                                                pair_meta m = { e->col, colD, e->st, (uint8_t)stD, e->full, fullD };
                                                 mcc_vec_push(&sc->meta, m);
                                             }
                                             mcc_vec_push(&sc->pairs, p);
@@ -407,6 +440,206 @@ static void collide_block_pair(const pair_ctx *pc, const block_pair *bp, const p
                                            : feature_hash(bp->d, ia, bp->s, ib, lm.points[k].pair);
                 add_point(sc, n, pA, lm.points[k].separation, feat, friction, restitution);
             }
+        }
+    }
+}
+
+/* ---------------- 整格大板（parry CanonicalVoxelShape） ---------------- */
+
+typedef struct canon_ctx {
+    double domS[6], domD[6];     /* 两侧大板延伸截止范围（各自方块坐标，lo xyz, hi xyz） */
+    b3Transform xf_ds;           /* D 局部 → S 局部 */
+} canon_ctx;
+
+/* 刚体包围盒（方块坐标）经 xf 变换到另一侧局部系，再加上对方偏移得到对方方块坐标的包围盒 */
+static void bounds_to_other(const vside *from, const vside *to, b3Transform xf, double margin, double out[6]) {
+    const phys_body *b = from->body;
+    for (int i = 0; i < 3; i++) { out[i] = DBL_MAX; out[i + 3] = -DBL_MAX; }
+    for (int k = 0; k < 8; k++) {
+        b3Vec3 c = { (float)((k & 1 ? b->bmax[0] + 1 : b->bmin[0]) - from->offset[0]),
+                     (float)((k & 2 ? b->bmax[1] + 1 : b->bmin[1]) - from->offset[1]),
+                     (float)((k & 4 ? b->bmax[2] + 1 : b->bmin[2]) - from->offset[2]) };
+        b3Vec3 q = b3TransformPoint(xf, c);
+        double w[3] = { q.x + to->offset[0], q.y + to->offset[1], q.z + to->offset[2] };
+        for (int i = 0; i < 3; i++) {
+            out[i] = MCC_MIN(out[i], w[i] - margin);
+            out[i + 3] = MCC_MAX(out[i + 3], w[i] + margin);
+        }
+    }
+}
+
+static void clip_own(const vside *v, double margin, double dom[6]) {
+    if (v->kind != PHYS_KIND_BODY) return;
+    const phys_body *b = v->body;
+    for (int i = 0; i < 3; i++) {
+        dom[i] = MCC_MAX(dom[i], b->bmin[i] - margin);
+        dom[i + 3] = MCC_MIN(dom[i + 3], b->bmax[i] + 1 + margin);
+    }
+}
+
+static void canon_init(canon_ctx *cc, const pair_ctx *pc) {
+    vside *S = pc->s_is_a ? pc->a : pc->b, *D = pc->s_is_a ? pc->b : pc->a;
+    cc->xf_ds = pc->s_is_a ? pc->xf_ba : b3InvertTransform(pc->xf_ba);
+    const double margin = 1.0;
+    /* 遍历侧 D 总是刚体 */
+    bounds_to_other(D, S, cc->xf_ds, margin, cc->domS);
+    clip_own(S, margin, cc->domS);
+    if (S->kind == PHYS_KIND_BODY) {
+        bounds_to_other(S, D, b3InvertTransform(cc->xf_ds), margin, cc->domD);
+    } else {
+        for (int i = 0; i < 3; i++) { cc->domD[i] = -DBL_MAX; cc->domD[i + 3] = DBL_MAX; }
+    }
+    clip_own(D, margin, cc->domD);
+}
+
+/* full 位 0..5 = -x +x -y +y -z +z 方向邻居是整块：该方向延伸 */
+static void canon_range(const int32_t b[3], uint8_t full, int32_t r[6]) {
+    for (int i = 0; i < 3; i++) {
+        r[i] = full >> (2 * i) & 1 ? INT32_MIN : b[i];
+        r[i + 3] = full >> (2 * i + 1) & 1 ? INT32_MAX : b[i];
+    }
+}
+
+/* 规范范围 → 实际盒子（方块坐标 lo/hi），延伸方向截到 dom，且一定包住方块本身 */
+static void canon_box(const int32_t r[6], const int32_t b[3], const double dom[6], double lo[3], double hi[3]) {
+    for (int i = 0; i < 3; i++) {
+        lo[i] = r[i] == INT32_MIN ? MCC_MIN((double)b[i], dom[i]) : b[i];
+        hi[i] = r[i + 3] == INT32_MAX ? MCC_MAX((double)b[i] + 1, dom[i + 3]) : b[i] + 1.0;
+    }
+}
+
+static uint32_t group_find(scratch *sc, const int32_t rs[6], const int32_t rd[6], uint32_t pair) {
+    uint64_t h = 0x9E3779B97F4A7C15ULL;
+    for (int i = 0; i < 6; i++) h = mcc_hash64(h ^ (uint32_t)rs[i] ^ ((uint64_t)(uint32_t)rd[i] << 32));
+    uint32_t mask = sc->gtab_cap - 1;
+    for (uint32_t i = (uint32_t)h & mask;; i = (i + 1) & mask) {
+        uint32_t g = sc->gtab[i];
+        if (g == UINT32_MAX) {
+            cgroup cg;
+            memset(&cg, 0, sizeof cg);
+            memcpy(cg.rs, rs, sizeof cg.rs);
+            memcpy(cg.rd, rd, sizeof cg.rd);
+            cg.first = pair;
+            mcc_vec_push(&sc->groups, cg);
+            sc->gtab[i] = (uint32_t)sc->groups.len - 1;
+            return sc->gtab[i];
+        }
+        const cgroup *cg = &sc->groups.data[g];
+        if (!memcmp(cg->rs, rs, sizeof cg->rs) && !memcmp(cg->rd, rd, sizeof cg->rd)) return g;
+    }
+}
+
+MCC_INLINE bool in_voxel(b3Vec3 p, const vside *v, const int32_t blk[3], float tol) {
+    float x = (float)(blk[0] - v->offset[0]), y = (float)(blk[1] - v->offset[1]), z = (float)(blk[2] - v->offset[2]);
+    return p.x >= x - tol && p.x <= x + 1 + tol && p.y >= y - tol && p.y <= y + 1 + tol && p.z >= z - tol && p.z <= z + 1 + tol;
+}
+
+/* 单位方块（中心 c，半边 0.5）沿 dir 的支撑点 */
+MCC_INLINE b3Vec3 cube_support(b3Vec3 c, b3Vec3 dir) {
+    return (b3Vec3){ c.x + (dir.x >= 0 ? 0.5f : -0.5f), c.y + (dir.y >= 0 ? 0.5f : -0.5f), c.z + (dir.z >= 0 ? 0.5f : -0.5f) };
+}
+
+/* 所有"两侧都是整格"的方块对：按规范形状分组碰撞 */
+static void collide_canonical(const pair_ctx *pc, const uint32_t *idx, size_t n, scratch *sc) {
+    if (!n) return;
+    vside *S = pc->s_is_a ? pc->a : pc->b, *D = pc->s_is_a ? pc->b : pc->a;
+    canon_ctx cc;
+    canon_init(&cc, pc);
+
+    sc->groups.len = 0;
+    sc->gpts.len = 0;
+    uint32_t need = 16;
+    while (need < n * 2) need <<= 1;
+    if (sc->gtab_cap < need) {
+        free(sc->gtab);
+        sc->gtab_cap = need;
+        sc->gtab = mcc_xmalloc(sizeof(uint32_t) * need);
+    }
+    memset(sc->gtab, 0xFF, sizeof(uint32_t) * sc->gtab_cap);
+    mcc_vec_reserve(&sc->pair_group, n);
+    sc->pair_group.len = n;
+    for (size_t k = 0; k < n; k++) {
+        const block_pair *bp = &sc->pairs.data[idx[k]];
+        const pair_meta *pm = &sc->meta.data[idx[k]];
+        int32_t rs[6], rd[6];
+        canon_range(bp->s, pm->fullS, rs);
+        canon_range(bp->d, pm->fullD, rd);
+        sc->pair_group.data[k] = group_find(sc, rs, rd, (uint32_t)k);
+    }
+
+    /* 每组一次盒子碰撞 */
+    for (size_t g = 0; g < sc->groups.len; g++) {
+        cgroup *cg = &sc->groups.data[g];
+        const block_pair *bp = &sc->pairs.data[idx[cg->first]];
+        double slo[3], shi[3], dlo[3], dhi[3];
+        canon_box(cg->rs, bp->s, cc.domS, slo, shi);
+        canon_box(cg->rd, bp->d, cc.domD, dlo, dhi);
+        /* 盒子中心（各自局部系）与半尺寸 */
+        b3Vec3 cS = { (float)((slo[0] + shi[0]) * 0.5 - S->offset[0]), (float)((slo[1] + shi[1]) * 0.5 - S->offset[1]),
+                      (float)((slo[2] + shi[2]) * 0.5 - S->offset[2]) };
+        b3Vec3 hS = { (float)((shi[0] - slo[0]) * 0.5), (float)((shi[1] - slo[1]) * 0.5), (float)((shi[2] - slo[2]) * 0.5) };
+        b3Vec3 cD = { (float)((dlo[0] + dhi[0]) * 0.5 - D->offset[0]), (float)((dlo[1] + dhi[1]) * 0.5 - D->offset[1]),
+                      (float)((dlo[2] + dhi[2]) * 0.5 - D->offset[2]) };
+        b3Vec3 hD = { (float)((dhi[0] - dlo[0]) * 0.5), (float)((dhi[1] - dlo[1]) * 0.5), (float)((dhi[2] - dlo[2]) * 0.5) };
+        b3Vec3 cA = pc->s_is_a ? cS : cD, hA = pc->s_is_a ? hS : hD;
+        b3Vec3 cB = pc->s_is_a ? cD : cS, hB = pc->s_is_a ? hD : hS;
+        b3Transform xf = { b3Sub(b3TransformPoint(pc->xf_ba, cB), cA), pc->xf_ba.q };
+        b3LocalManifoldPoint pts[B3_MAX_MANIFOLD_POINTS];
+        b3LocalManifold lm = { 0 };
+        lm.points = pts;
+        phys_collide_boxes(hA, hB, xf, pc->speculative, &lm);
+        cg->pt0 = (uint32_t)sc->gpts.len;
+        cg->normal = lm.normal;
+        for (int k = 0; k < lm.pointCount; k++) {
+            if (lm.points[k].separation > pc->speculative) continue;
+            gpoint gp = { b3Add(lm.points[k].point, cA), lm.points[k].separation, lm.points[k].pair, UINT32_MAX };
+            mcc_vec_push(&sc->gpts, gp);
+        }
+        cg->npts = (uint32_t)sc->gpts.len - cg->pt0;
+    }
+
+    /* 接触点分回真正包含它的方块对（两侧方块都要包含，留一点容差） */
+    for (size_t k = 0; k < n; k++) {
+        cgroup *cg = &sc->groups.data[sc->pair_group.data[k]];
+        if (!cg->npts || cg->sel == (1u << cg->npts) - 1) continue;
+        const block_pair *bp = &sc->pairs.data[idx[k]];
+        const int32_t *blkA = pc->s_is_a ? bp->s : bp->d, *blkB = pc->s_is_a ? bp->d : bp->s;
+        for (uint32_t j = 0; j < cg->npts; j++) {
+            if (cg->sel >> j & 1) continue;
+            gpoint *gp = &sc->gpts.data[cg->pt0 + j];
+            float tol = 0.5f * fabsf(gp->sep) + 0.01f;
+            if (!in_voxel(gp->p, pc->a, blkA, tol)) continue;
+            if (!in_voxel(b3InvTransformPoint(pc->xf_ba, gp->p), pc->b, blkB, tol)) continue;
+            cg->sel |= 1u << j;
+            gp->owner = (uint32_t)k;
+        }
+    }
+
+    for (size_t g = 0; g < sc->groups.len; g++) {
+        const cgroup *cg = &sc->groups.data[g];
+        b3Vec3 n_ = cg->normal;
+        for (uint32_t j = 0; j < cg->npts; j++) {
+            if (!(cg->sel >> j & 1)) continue;
+            const gpoint *gp = &sc->gpts.data[cg->pt0 + j];
+            const block_pair *bp = &sc->pairs.data[idx[gp->owner]];
+            const pair_meta *pm = &sc->meta.data[idx[gp->owner]];
+            const int32_t *blkA = pc->s_is_a ? bp->s : bp->d, *blkB = pc->s_is_a ? bp->d : bp->s;
+            if (gp->sep < 0) {
+                /* 穿透点：确认不是延伸出来的假几何给的法线（parry 同款检查） */
+                b3Vec3 vA = { (float)(blkA[0] + 0.5 - pc->a->offset[0]), (float)(blkA[1] + 0.5 - pc->a->offset[1]),
+                              (float)(blkA[2] + 0.5 - pc->a->offset[2]) };
+                b3Vec3 vBl = { (float)(blkB[0] + 0.5 - pc->b->offset[0]), (float)(blkB[1] + 0.5 - pc->b->offset[1]),
+                               (float)(blkB[2] + 0.5 - pc->b->offset[2]) };
+                b3Vec3 sp1 = cube_support(vA, b3Neg(n_));
+                b3Vec3 dirB = b3InvRotateVector(pc->xf_ba.q, n_);
+                b3Vec3 sp2 = b3TransformPoint(pc->xf_ba, cube_support(vBl, dirB));
+                if (!(b3Dot(b3Sub(sp2, sp1), b3Neg(n_)) < gp->sep)) continue;
+            }
+            const phys_collider *colA = pc->s_is_a ? pm->colS : pm->colD, *colB = pc->s_is_a ? pm->colD : pm->colS;
+            float friction = SUBLEVEL_BASE_FRICTION * colA->friction * colB->friction;
+            float restitution = MCC_MAX(colA->restitution, colB->restitution);
+            uint32_t feat = pc->s_is_a ? feature_hash(bp->s, 0, bp->d, 0, gp->fp) : feature_hash(bp->d, 0, bp->s, 0, gp->fp);
+            add_point(sc, n_, gp->p, gp->sep, feat, friction, restitution);
         }
     }
 }
@@ -645,7 +878,14 @@ const b3VoxelManifold *phys_voxel_manifolds(const b3VoxelQuery *q_in, int *count
     uint64_t ta = stats ? mcc_nanotime() : 0;
     size_t np = phys_find_pairs(trav, other, xf_to, q->speculativeDistance, false, sc);
     uint64_t tb = stats ? mcc_nanotime() : 0;
-    for (size_t i = 0; i < np; i++) collide_block_pair(&pc, &sc->pairs.data[i], &sc->meta.data[i], sc);
+    /* 两侧都是整格的走大板分组，其余（台阶、楼梯等）逐对逐碰撞箱 */
+    sc->canon_idx.len = 0;
+    for (size_t i = 0; i < np; i++) {
+        const pair_meta *pm = &sc->meta.data[i];
+        if (g_canonical && pm->colS->unit && pm->colD->unit) mcc_vec_push(&sc->canon_idx, (uint32_t)i);
+        else collide_block_pair(&pc, &sc->pairs.data[i], pm, sc);
+    }
+    collide_canonical(&pc, sc->canon_idx.data, sc->canon_idx.len, sc);
     uint64_t tc = stats ? mcc_nanotime() : 0;
     const b3VoxelManifold *res = emit(sc, count);
     if (stats) {
