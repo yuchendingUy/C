@@ -5,6 +5,9 @@
 #include "../core/jobs.h"
 #include "../core/log.h"
 #include <math.h>
+#include <pthread.h>
+
+static pthread_mutex_t g_world_lock = PTHREAD_MUTEX_INITIALIZER;
 
 #define MAX_REPORTED_COLLISIONS 100
 #define SUBLEVEL_BASE_FRICTION 0.525f   /* Sable 子世界碰撞体的基础摩擦 */
@@ -162,7 +165,11 @@ phys_scene *phys_scene_create(const phys_scene_config *cfg, mcc_chunk_store *ter
     } else {
         def.workerCount = 1;
     }
+    /* Box3D 在全局数组里找空位建世界，没有加锁：各区域线程会同时建/销毁场景，这里串行化 */
+    pthread_mutex_lock(&g_world_lock);
     s->world = b3CreateWorld(&def);
+    pthread_mutex_unlock(&g_world_lock);
+    if (!b3World_IsValid(s->world)) mcc_log_fatal("物理场景：Box3D 世界数量达到上限 %d", B3_MAX_WORLDS);
 
     s->terrain = terrain;
     if (terrain) {
@@ -190,7 +197,9 @@ static void body_free(phys_body *b) {
 
 void phys_scene_destroy(phys_scene *s) {
     if (s->terrain) mcc_store_unlisten(s->terrain, &s->terrain_listener);
+    pthread_mutex_lock(&g_world_lock);
     b3DestroyWorld(s->world);
+    pthread_mutex_unlock(&g_world_lock);
     uint32_t it = 0;
     void *v;
     while (mcc_hmap_next(&s->bodies, &it, NULL, &v)) body_free(v);
@@ -217,20 +226,10 @@ static void update_body_shape_bounds(phys_body *b) {
     b3Shape_SetVoxelBounds(b->shape, box);
 }
 
-bool phys_sublevel_create(phys_scene *s, int32_t id, const double pose[7], mcc_chunk_store *blocks) {
-    if (phys_body_get(s, id)) {
-        mcc_error("物理场景：刚体 %d 已存在", id);
-        return false;
-    }
-    phys_body *b = mcc_xcalloc(1, sizeof *b);
-    b->kind = PHYS_KIND_BODY;
-    b->scene = s;
-    b->id = id;
-    b->blocks = blocks;
-
-    b3WorldTransform xf = pose_to_xf(pose);
+/* 在场景的 Box3D 世界里给 b 建刚体和体素形状 */
+static void body_create_b3(phys_scene *s, phys_body *b, b3WorldTransform xf, b3BodyType type) {
     b3BodyDef bd = b3DefaultBodyDef();
-    bd.type = b3_dynamicBody;
+    bd.type = type;
     bd.position = xf.p;
     bd.rotation = xf.q;
     bd.linearDamping = (float)s->cfg.universal_drag;
@@ -244,7 +243,21 @@ bool phys_sublevel_create(phys_scene *s, int32_t id, const double pose[7], mcc_c
     sd.userData = b;
     b3VoxelShape vs = { b, { { -0.5f, -0.5f, -0.5f }, { 0.5f, 0.5f, 0.5f } }, false };
     b->shape = b3CreateVoxelShape(b->body, &sd, &vs);
+    update_body_shape_bounds(b);
+}
 
+bool phys_sublevel_create(phys_scene *s, int32_t id, const double pose[7], mcc_chunk_store *blocks) {
+    if (phys_body_get(s, id)) {
+        mcc_error("物理场景：刚体 %d 已存在", id);
+        return false;
+    }
+    phys_body *b = mcc_xcalloc(1, sizeof *b);
+    b->kind = PHYS_KIND_BODY;
+    b->scene = s;
+    b->id = id;
+    b->blocks = blocks;
+
+    body_create_b3(s, b, pose_to_xf(pose), b3_dynamicBody);
     /* 体素形状不贡献质量；质量追踪算出真实值前先给单位质量，Box3D 要求步进前质量已设置 */
     b3MassData md = { 1.0f, b3Vec3_zero, { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } } };
     b3Body_SetMassData(b->body, md);
@@ -256,6 +269,33 @@ bool phys_sublevel_create(phys_scene *s, int32_t id, const double pose[7], mcc_c
     mcc_hmap_put(&s->bodies, (uint64_t)(uint32_t)id, b);
     return true;
 }
+
+/* 区域合并/拆分：刚体换到另一个场景。Box3D 刚体不能跨世界，在目标世界按原状态重建：
+ * 位姿、速度、质量、休眠状态、每刻力原样保留；接触缓存（暖启动）丢失，下一步重新生成 */
+bool phys_body_migrate(phys_scene *src, phys_scene *dst, int32_t id) {
+    if (src == dst) return true;
+    phys_body *b = phys_body_get(src, id);
+    if (!b) return false;
+    if (phys_body_get(dst, id)) mcc_log_fatal("物理场景迁移：目标场景已有刚体 %d", id);
+    mcc_hmap_remove(&src->bodies, (uint64_t)(uint32_t)id);
+    b3WorldTransform xf = b3Body_GetTransform(b->body);
+    b3Vec3 v = b3Body_GetLinearVelocity(b->body), w = b3Body_GetAngularVelocity(b->body);
+    b3MassData md = b3Body_GetMassData(b->body);
+    b3BodyType type = b3Body_GetType(b->body);
+    bool awake = b3Body_IsAwake(b->body);
+    b3DestroyBody(b->body);
+
+    b->scene = dst;
+    body_create_b3(dst, b, xf, type);
+    b3Body_SetMassData(b->body, md);
+    b3Body_SetLinearVelocity(b->body, v);
+    b3Body_SetAngularVelocity(b->body, w);
+    if (!awake) b3Body_SetAwake(b->body, false);
+    mcc_hmap_put(&dst->bodies, (uint64_t)(uint32_t)id, b);
+    return true;
+}
+
+size_t phys_scene_body_count(phys_scene *s) { return s->bodies.count; }
 
 void phys_sublevel_remove(phys_scene *s, int32_t id) {
     phys_body *b = mcc_hmap_remove(&s->bodies, (uint64_t)(uint32_t)id);

@@ -192,11 +192,51 @@ static void test_section_release(void) {
     mcc_store_free(&st);
 }
 
+/* 区块在两个存储之间搬迁：交界处的外露判断要随邻居的有无更新 */
+static void test_move(void) {
+    mcc_info("== 区块搬迁（区域拆分/合并）");
+    mcc_chunk_store a, b;
+    mcc_store_init(&a, -16, 48);
+    mcc_store_init(&b, -16, 48);
+    test_fill(&a, gen, NULL, -3, 2, -3, 2, -16, 31);
+    char err[256];
+    /* 把 x >= 0 的一半搬到 b：交界两侧原本是内部的石头变成外露 */
+    uint64_t keys[64];
+    size_t n = 0;
+    for (int32_t cx = 0; cx <= 2; cx++)
+        for (int32_t cz = -3; cz <= 2; cz++) keys[n++] = mcc_key2(cx, cz);
+    uint32_t before = 0;
+    for (int32_t cz = -3; cz <= 2; cz++) before += mcc_store_chunk(&a, -1, cz)->sec[1]->solid_count;
+    mcc_store_move(&a, &b, keys, n);
+    bool ok1 = mcc_store_verify(&a, err, sizeof err);
+    if (!ok1) mcc_error("拆开后 a：%s", err);
+    bool ok2 = mcc_store_verify(&b, err, sizeof err);
+    if (!ok2) mcc_error("拆开后 b：%s", err);
+    uint32_t after = 0;
+    for (int32_t cz = -3; cz <= 2; cz++) after += mcc_store_chunk(&a, -1, cz)->sec[1]->solid_count;
+    CHECK(ok1 && ok2 && a.chunks.count == 18 && b.chunks.count == 18 && after > before,
+          "切成两半后两边位图都正确，交界处外露方块 %u → %u", before, after);
+    /* 全部搬回 a：交界处重新变成内部 */
+    n = 0;
+    uint32_t it = 0;
+    uint64_t k;
+    while (mcc_hmap_next(&b.chunks, &it, &k, NULL)) keys[n++] = k;
+    mcc_store_move(&b, &a, keys, n);
+    uint32_t back = 0;
+    for (int32_t cz = -3; cz <= 2; cz++) back += mcc_store_chunk(&a, -1, cz)->sec[1]->solid_count;
+    bool ok3 = mcc_store_verify(&a, err, sizeof err);
+    if (!ok3) mcc_error("合回后：%s", err);
+    CHECK(ok3 && b.chunks.count == 0 && back == before, "合回后位图正确，交界外露方块恢复为 %u", back);
+    mcc_store_free(&a);
+    mcc_store_free(&b);
+}
+
 int main(void) {
     test_load_blocks();
     test_palette();
     test_store();
     test_section_release();
+    test_move();
     test_free_blocks();
     if (g_fail) { mcc_error("世界存储测试失败"); return 1; }
     mcc_info("世界存储测试全部通过");

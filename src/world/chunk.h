@@ -64,6 +64,11 @@ void mcc_store_add_chunk(mcc_chunk_store *st, mcc_chunk *c);
 /* 移出存储并返回（调用方释放），不存在返回 NULL */
 mcc_chunk *mcc_store_remove_chunk(mcc_chunk_store *st, int32_t cx, int32_t cz);
 
+/* 区域合并/拆分：把 keys（mcc_key2）列出的区块从 from 整块搬到 to，位图不重算。
+ * 依次通知 from 的 chunk_removed 与 to 的 chunk_added。搬走的区块若与留在 from 的区块、
+ * 或 to 里原有的区块相邻，只重算两边交界那一面（同一区域的区块相邻时通常一起搬，基本不发生） */
+void mcc_store_move(mcc_chunk_store *from, mcc_chunk_store *to, const uint64_t *keys, size_t n);
+
 MCC_INLINE mcc_chunk *mcc_store_chunk(const mcc_chunk_store *st, int32_t cx, int32_t cz) {
     return (mcc_chunk *)mcc_hmap_get(&st->chunks, mcc_key2(cx, cz));
 }

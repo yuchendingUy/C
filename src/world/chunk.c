@@ -1,6 +1,9 @@
 #include "chunk.h"
 #include "../core/log.h"
 #include <stdio.h>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 /* ------------------------------------------------------------------ */
 /* 存储                                                                */
@@ -121,93 +124,257 @@ static void refresh_at(const mcc_chunk_store *st, int32_t x, int32_t y, int32_t 
     if (c) refresh(st, c, x, y, z);
 }
 
-static bool full_block(const mcc_chunk_section *s, int x, int y, int z) {
-    return s && (mcc_state_pflags(mcc_section_get(s, mcc_section_index(x, y, z))) & MCC_PHYS_FULL);
-}
+/* ---- 批量解码：区段每个方块的物理标志 ---- */
 
-static uint32_t full_row(const mcc_chunk_section *s, int y, int z) {
-    if (!s) return 0;
-    uint32_t r = 0;
-    for (int x = 0; x < 16; x++) r |= (uint32_t)full_block(s, x, y, z) << x;
-    return r;
-}
+/* 标志视图：调色板先换算成标志表，读一个方块只需取下标再查表 */
+typedef struct {
+    const mcc_chunk_section *s;
+    uint8_t pf[256];
+} fview;
 
-/* 整区段批量计算位图：先拼出带一圈邻居的整块位图，再按行求内部方块 */
-static void compute_section(const mcc_chunk_store *st, mcc_chunk *c, int i) {
-    mcc_chunk_section *s = c->sec[i];
+static void fv_init(fview *v, const mcc_chunk_section *s) {
+    v->s = s;
     if (!s) return;
+    if (s->bits == 0) v->pf[0] = mcc_state_pflags(s->single);
+    else if (s->bits != 16)
+        for (int i = 0; i < s->palette_len; i++) v->pf[i] = mcc_state_pflags(s->palette[i]);
+}
+
+MCC_INLINE uint8_t fv_at(const fview *v, int idx) {
+    const mcc_chunk_section *s = v->s;
+    switch (s->bits) {
+    case 0: return v->pf[0];
+    case 4: return v->pf[(s->d8[idx >> 1] >> ((idx & 1) << 2)) & 15];
+    case 8: return v->pf[s->d8[idx]];
+    default: return mcc_state_pflags(s->d16[idx]);
+    }
+}
+
+/* 整个区段解码成每方块一字节标志 */
+static void section_flags(const mcc_chunk_section *s, uint8_t *out) {
+    fview v;
+    fv_init(&v, s);
+    switch (s->bits) {
+    case 0: memset(out, v.pf[0], MCC_SECTION_BLOCKS); break;
+    case 4:
+        for (int i = 0; i < MCC_SECTION_BLOCKS / 2; i++) {
+            uint8_t b = s->d8[i];
+            out[2 * i] = v.pf[b & 15];
+            out[2 * i + 1] = v.pf[b >> 4];
+        }
+        break;
+    case 8:
+        for (int i = 0; i < MCC_SECTION_BLOCKS; i++) out[i] = v.pf[s->d8[i]];
+        break;
+    default:
+        for (int i = 0; i < MCC_SECTION_BLOCKS; i++) out[i] = mcc_state_pflags(s->d16[i]);
+    }
+}
+
+/* 16 个方块（一行）的某个标志位压成 16 位掩码 */
+MCC_INLINE uint16_t row_mask(const uint8_t *f, int bit) {
+#if defined(__SSE2__)
+    __m128i v = _mm_loadu_si128((const __m128i *)f);
+    return (uint16_t)_mm_movemask_epi8(_mm_slli_epi16(v, 7 - bit));
+#else
+    uint32_t r = 0;
+    for (int x = 0; x < 16; x++) r |= (uint32_t)(f[x] >> bit & 1) << x;
+    return (uint16_t)r;
+#endif
+}
+
+typedef struct {
     uint16_t solid[16][16], liquid[16][16], full[16][16];
-    mcc_section_flag_rows(s, solid, liquid, full);
-    uint32_t any = 0;
+} sec_rows;
+
+static void section_rows(const mcc_chunk_section *s, sec_rows *r) {
+    uint8_t f[MCC_SECTION_BLOCKS];
+    section_flags(s, f);
     for (int y = 0; y < 16; y++)
-        for (int z = 0; z < 16; z++) any |= (uint32_t)solid[y][z] | liquid[y][z];
-    if (!any) {
-        free(s->phys);
-        s->phys = NULL;
-        s->solid_count = s->liquid_count = 0;
-        sync_secs(c, i);
+        for (int z = 0; z < 16; z++) {
+            const uint8_t *row = f + (y << 8) + (z << 4);
+            r->solid[y][z] = row_mask(row, 0);
+            r->full[y][z] = row_mask(row, 1);
+            r->liquid[y][z] = row_mask(row, 2);
+        }
+}
+
+/* 取 16 个方块的标志：下标 base + k*stride，位宽分支在循环外 */
+static void fv_gather(const fview *v, int base, int stride, uint8_t out[16]) {
+    const mcc_chunk_section *s = v->s;
+    switch (s->bits) {
+    case 0: memset(out, v->pf[0], 16); break;
+    case 4:
+        for (int k = 0, idx = base; k < 16; k++, idx += stride) out[k] = v->pf[(s->d8[idx >> 1] >> ((idx & 1) << 2)) & 15];
+        break;
+    case 8:
+        for (int k = 0, idx = base; k < 16; k++, idx += stride) out[k] = v->pf[s->d8[idx]];
+        break;
+    default:
+        for (int k = 0, idx = base; k < 16; k++, idx += stride) out[k] = mcc_state_pflags(s->d16[idx]);
+    }
+}
+
+/* 区段的一面，同时取实心与整块两个掩码（任一输出可为 NULL）：
+ *   x = 常数：out[y] 第 z 位；z = 常数：out[y] 第 x 位；y = 常数：out[z] 第 x 位 */
+enum { FACE_X, FACE_Y, FACE_Z };
+static void face(const fview *v, int axis, int layer, uint16_t solid[16], uint16_t full[16]) {
+    if (!v->s) {
+        if (solid) memset(solid, 0, 32);
+        if (full) memset(full, 0, 32);
         return;
     }
+    uint8_t f[16];
+    for (int j = 0; j < 16; j++) {
+        if (axis == FACE_X) fv_gather(v, layer + (j << 8), 16, f);
+        else if (axis == FACE_Z) fv_gather(v, (layer << 4) + (j << 8), 1, f);
+        else fv_gather(v, (layer << 8) + (j << 4), 1, f);
+        if (solid) solid[j] = row_mask(f, 0);
+        if (full) full[j] = row_mask(f, 1);
+    }
+}
 
-    /* F[y+1][z+1] 的第 x+1 位：(x, y, z) 是否整块，x/y/z 取 -1~16 */
-    uint32_t F[18][18];
-    memset(F, 0, sizeof F);
-    for (int y = 0; y < 16; y++)
-        for (int z = 0; z < 16; z++) F[y + 1][z + 1] = (uint32_t)full[y][z] << 1;
-    int32_t sy = c->min_sy + i;
-    const mcc_chunk *w = mcc_store_chunk(st, c->cx - 1, c->cz), *e = mcc_store_chunk(st, c->cx + 1, c->cz);
-    const mcc_chunk *n = mcc_store_chunk(st, c->cx, c->cz - 1), *so = mcc_store_chunk(st, c->cx, c->cz + 1);
-    const mcc_chunk_section *ws = w ? mcc_chunk_section_at(w, sy) : NULL, *es = e ? mcc_chunk_section_at(e, sy) : NULL;
-    const mcc_chunk_section *ns = n ? mcc_chunk_section_at(n, sy) : NULL, *ss = so ? mcc_chunk_section_at(so, sy) : NULL;
-    const mcc_chunk_section *bs = i > 0 ? c->sec[i - 1] : NULL, *ts = i + 1 < c->nsec ? c->sec[i + 1] : NULL;
+/* 把区段的 solid 位图换成 rows（liquid 照抄），维护计数与分配 */
+static void store_phys_rows(mcc_chunk *c, int i, const uint16_t solid[16][16], const uint16_t liquid[16][16]) {
+    mcc_chunk_section *s = c->sec[i];
+    uint32_t ns = 0, nl = 0;
     for (int y = 0; y < 16; y++)
         for (int z = 0; z < 16; z++) {
-            F[y + 1][z + 1] |= (uint32_t)full_block(ws, 15, y, z) | (uint32_t)full_block(es, 0, y, z) << 17;
-        }
-    for (int y = 0; y < 16; y++) {
-        F[y + 1][0] = full_row(ns, y, 15) << 1;
-        F[y + 1][17] = full_row(ss, y, 0) << 1;
-    }
-    for (int z = 0; z < 16; z++) {
-        F[0][z + 1] = full_row(bs, 15, z) << 1;
-        F[17][z + 1] = full_row(ts, 0, z) << 1;
-    }
-
-    if (!s->phys) s->phys = mcc_xmalloc(sizeof *s->phys);
-    uint32_t ns_ = 0, nl = 0;
-    for (int y = 0; y < 16; y++)
-        for (int z = 0; z < 16; z++) {
-            uint32_t f = F[y + 1][z + 1];
-            /* 内部只看六个邻居，本方块自身不必是整块（被石头包住的楼梯也算内部） */
-            uint32_t in = (f >> 1) & (f << 1) & F[y + 1][z] & F[y + 1][z + 2] & F[y][z + 1] & F[y + 2][z + 1];
-            uint16_t r = (uint16_t)(solid[y][z] & ~(in >> 1));
-            s->phys->solid[y][z] = r;
-            s->phys->liquid[y][z] = liquid[y][z];
-            ns_ += (uint32_t)__builtin_popcount(r);
+            ns += (uint32_t)__builtin_popcount(solid[y][z]);
             nl += (uint32_t)__builtin_popcount(liquid[y][z]);
         }
-    s->solid_count = (uint16_t)ns_;
-    s->liquid_count = (uint16_t)nl;
-    if (!ns_ && !nl) {
+    if (!ns && !nl) {
         free(s->phys);
         s->phys = NULL;
+    } else {
+        if (!s->phys) s->phys = mcc_xmalloc(sizeof *s->phys);
+        memcpy(s->phys->solid, solid, sizeof s->phys->solid);
+        memcpy(s->phys->liquid, liquid, sizeof s->phys->liquid);
     }
+    s->solid_count = (uint16_t)ns;
+    s->liquid_count = (uint16_t)nl;
     sync_secs(c, i);
 }
 
-/* 区块 c 朝 (dx, dz) 方向那一面的边界层：c 里有碰撞箱的方块重算（邻居区块刚加入或移出） */
-static void refresh_border(const mcc_chunk_store *st, mcc_chunk *c, int dx, int dz) {
+/* 整个区块批量计算位图：各区段只解码一次，上下相邻区段复用；四邻区块只解码贴着的一面 */
+static void compute_chunk(const mcc_chunk_store *st, mcc_chunk *c) {
+    sec_rows *R = mcc_xmalloc(sizeof(sec_rows) * (size_t)c->nsec);
+    for (int i = 0; i < c->nsec; i++)
+        if (c->sec[i]) section_rows(c->sec[i], &R[i]);
+    const mcc_chunk *w = mcc_store_chunk(st, c->cx - 1, c->cz), *e = mcc_store_chunk(st, c->cx + 1, c->cz);
+    const mcc_chunk *n = mcc_store_chunk(st, c->cx, c->cz - 1), *so = mcc_store_chunk(st, c->cx, c->cz + 1);
     for (int i = 0; i < c->nsec; i++) {
-        const mcc_chunk_section *s = c->sec[i];
-        if (!s) continue;
-        int32_t by = (c->min_sy + i) << 4;
+        if (!c->sec[i]) continue;
+        sec_rows *r = &R[i];
+        uint32_t any = 0;
         for (int y = 0; y < 16; y++)
-            for (int k = 0; k < 16; k++) {
-                int lx = dx > 0 ? 15 : dx < 0 ? 0 : k;
-                int lz = dz > 0 ? 15 : dz < 0 ? 0 : k;
-                if (!(mcc_state_pflags(mcc_section_get(s, mcc_section_index(lx, y, lz))) & MCC_PHYS_SOLID)) continue;
-                refresh(st, c, (c->cx << 4) + lx, by + y, (c->cz << 4) + lz);
+            for (int z = 0; z < 16; z++) any |= (uint32_t)r->solid[y][z] | r->liquid[y][z];
+        if (!any) {
+            store_phys_rows(c, i, r->solid, r->liquid);
+            continue;
+        }
+        int32_t sy = c->min_sy + i;
+        fview fw, fe, fn, fs;
+        fv_init(&fw, w ? mcc_chunk_section_at(w, sy) : NULL);
+        fv_init(&fe, e ? mcc_chunk_section_at(e, sy) : NULL);
+        fv_init(&fn, n ? mcc_chunk_section_at(n, sy) : NULL);
+        fv_init(&fs, so ? mcc_chunk_section_at(so, sy) : NULL);
+        uint16_t W[16], E[16], N[16], S[16];
+        face(&fw, FACE_X, 15, NULL, W);
+        face(&fe, FACE_X, 0, NULL, E);
+        face(&fn, FACE_Z, 15, NULL, N);
+        face(&fs, FACE_Z, 0, NULL, S);
+        static const uint16_t zero[16];
+        const uint16_t *below = i > 0 && c->sec[i - 1] ? R[i - 1].full[15] : zero;
+        const uint16_t *above = i + 1 < c->nsec && c->sec[i + 1] ? R[i + 1].full[0] : zero;
+        uint16_t solid[16][16];
+        for (int y = 0; y < 16; y++)
+            for (int z = 0; z < 16; z++) {
+                uint32_t f = (uint32_t)r->full[y][z] << 1 | (W[y] >> z & 1) | (uint32_t)(E[y] >> z & 1) << 17;
+                uint32_t zn = z > 0 ? r->full[y][z - 1] : N[y], zp = z < 15 ? r->full[y][z + 1] : S[y];
+                uint32_t yn = y > 0 ? r->full[y - 1][z] : below[z], yp = y < 15 ? r->full[y + 1][z] : above[z];
+                /* 内部只看六个邻居，本方块自身不必是整块（被石头包住的楼梯也算内部） */
+                uint32_t in = (f >> 2) & f & zn & zp & yn & yp;
+                solid[y][z] = (uint16_t)(r->solid[y][z] & ~in);
             }
+        store_phys_rows(c, i, solid, r->liquid);
+    }
+    free(R);
+}
+
+/* 区块 c 朝 (dx, dz) 方向那一面的边界层重算（那边的邻居区块刚加入、移出或换了存储）。
+ * 按行位运算：只解码边界层、往里一层、外侧邻居的贴面，以及两端拐角处的一列 */
+static void refresh_border(const mcc_chunk_store *st, mcc_chunk *c, int dx, int dz) {
+    const mcc_chunk *o = mcc_store_chunk(st, c->cx + dx, c->cz + dz);
+    /* 沿边界方向 k 的两端，各属于垂直方向的邻居区块 */
+    const mcc_chunk *kn = dx ? mcc_store_chunk(st, c->cx, c->cz - 1) : mcc_store_chunk(st, c->cx - 1, c->cz);
+    const mcc_chunk *kp = dx ? mcc_store_chunk(st, c->cx, c->cz + 1) : mcc_store_chunk(st, c->cx + 1, c->cz);
+    int layer = (dx > 0 || dz > 0) ? 15 : 0, inner = layer == 15 ? 14 : 1, outer = 15 - layer;
+    for (int i = 0; i < c->nsec; i++) {
+        mcc_chunk_section *s = c->sec[i];
+        if (!s) continue;
+        int32_t sy = c->min_sy + i;
+        fview fl, fo, fb, ft, fkn, fkp;
+        fv_init(&fl, s);
+        fv_init(&fo, o ? mcc_chunk_section_at(o, sy) : NULL);
+        fv_init(&fb, i > 0 ? c->sec[i - 1] : NULL);
+        fv_init(&ft, i + 1 < c->nsec ? c->sec[i + 1] : NULL);
+        fv_init(&fkn, kn ? mcc_chunk_section_at(kn, sy) : NULL);
+        fv_init(&fkp, kp ? mcc_chunk_section_at(kp, sy) : NULL);
+        int ax = dx ? FACE_X : FACE_Z;
+        /* L* 本层、If 往里一层、Of 外侧邻居贴面：都是 [y] 第 k 位 */
+        uint16_t Ls[16], Lf[16], If[16], Of[16], B[16], T[16], KN[16], KP[16];
+        face(&fl, ax, layer, Ls, Lf);
+        face(&fl, ax, inner, NULL, If);
+        face(&fo, ax, outer, NULL, Of);
+        /* 上下相邻区段贴面（[z] 第 x 位），取出本层那一行/列 */
+        face(&fb, FACE_Y, 15, NULL, B);
+        face(&ft, FACE_Y, 0, NULL, T);
+        uint32_t yb = 0, yt = 0;
+        if (dx) {
+            for (int k = 0; k < 16; k++) { yb |= (uint32_t)(B[k] >> layer & 1) << k; yt |= (uint32_t)(T[k] >> layer & 1) << k; }
+        } else {
+            yb = B[layer];
+            yt = T[layer];
+        }
+        /* 两端拐角：垂直方向邻居区块贴面上同一层的那一列 */
+        face(&fkn, dx ? FACE_Z : FACE_X, 15, NULL, KN);
+        face(&fkp, dx ? FACE_Z : FACE_X, 0, NULL, KP);
+        uint16_t want[16];
+        bool any = false;
+        for (int y = 0; y < 16; y++) {
+            uint32_t E = (uint32_t)Lf[y] << 1 | (uint32_t)(KN[y] >> layer & 1) | (uint32_t)(KP[y] >> layer & 1) << 17;
+            uint32_t yn = y > 0 ? Lf[y - 1] : yb, yp = y < 15 ? Lf[y + 1] : yt;
+            uint32_t in = (E & (E >> 2)) & If[y] & Of[y] & yn & yp;
+            want[y] = (uint16_t)(Ls[y] & ~in);
+            any |= want[y] != 0;
+        }
+        /* 整批写回：只动本层的位，计数按差值更新 */
+        if (!s->phys) {
+            if (!any) continue;
+            s->phys = mcc_xcalloc(1, sizeof *s->phys);
+        }
+        int32_t delta = 0;
+        for (int y = 0; y < 16; y++) {
+            if (dx) {
+                for (int k = 0; k < 16; k++) {
+                    uint16_t *row = &s->phys->solid[y][k];
+                    uint16_t nr = (uint16_t)((*row & ~(1u << layer)) | (uint32_t)(want[y] >> k & 1) << layer);
+                    delta += __builtin_popcount(nr) - __builtin_popcount(*row);
+                    *row = nr;
+                }
+            } else {
+                uint16_t *row = &s->phys->solid[y][layer];
+                delta += __builtin_popcount(want[y]) - __builtin_popcount(*row);
+                *row = want[y];
+            }
+        }
+        s->solid_count = (uint16_t)(s->solid_count + delta);
+        if (!s->solid_count && !s->liquid_count) {
+            free(s->phys);
+            s->phys = NULL;
+        }
+        sync_secs(c, i);
     }
 }
 
@@ -218,7 +385,7 @@ void mcc_store_add_chunk(mcc_chunk_store *st, mcc_chunk *c) {
     if (mcc_store_chunk(st, c->cx, c->cz)) mcc_log_fatal("区块 (%d,%d) 重复加入存储", c->cx, c->cz);
     c->store = st;
     mcc_hmap_put(&st->chunks, mcc_key2(c->cx, c->cz), c);
-    for (int i = 0; i < c->nsec; i++) compute_section(st, c, i);
+    compute_chunk(st, c);
     /* 四邻朝向本区块的那一面：原来按空气算的邻居现在可能是整块 */
     for (int d = 0; d < 4; d++) {
         mcc_chunk *n = mcc_store_chunk(st, c->cx + DIRS[d][0], c->cz + DIRS[d][1]);
@@ -240,6 +407,47 @@ mcc_chunk *mcc_store_remove_chunk(mcc_chunk_store *st, int32_t cx, int32_t cz) {
         if (n) refresh_border(st, n, -DIRS[d][0], -DIRS[d][1]);
     }
     return c;
+}
+
+void mcc_store_move(mcc_chunk_store *from, mcc_chunk_store *to, const uint64_t *keys, size_t n) {
+    if (from == to || !n) return;
+    if (from->min_sy != to->min_sy || from->nsec != to->nsec) mcc_log_fatal("区块存储高度不同，不能搬迁");
+    mcc_chunk **moved = mcc_xmalloc(sizeof(mcc_chunk *) * n);
+    size_t m = 0;
+    mcc_hmap moving;
+    mcc_hmap_init(&moving, (uint32_t)n * 2);
+    for (size_t i = 0; i < n; i++) {
+        mcc_chunk *c = mcc_hmap_get(&from->chunks, keys[i]);
+        if (!c) continue;
+        if (mcc_store_chunk(to, c->cx, c->cz)) mcc_log_fatal("区块 (%d,%d) 搬迁目标已存在", c->cx, c->cz);
+        for (mcc_store_listener *l = from->listeners; l; l = l->next)
+            if (l->chunk_removed) l->chunk_removed(l->ctx, c);
+        mcc_hmap_remove(&from->chunks, keys[i]);
+        mcc_hmap_put(&moving, keys[i], c);
+        moved[m++] = c;
+    }
+    for (size_t i = 0; i < m; i++) {
+        mcc_chunk *c = moved[i];
+        c->store = to;
+        mcc_hmap_put(&to->chunks, mcc_key2(c->cx, c->cz), c);
+    }
+    /* 交界：搬走的区块旁边留在 from 的（现在分开了），或 to 里原有的（现在挨上了） */
+    for (size_t i = 0; i < m; i++) {
+        mcc_chunk *c = moved[i];
+        for (int d = 0; d < 4; d++) {
+            int32_t nx = c->cx + DIRS[d][0], nz = c->cz + DIRS[d][1];
+            mcc_chunk *nf = mcc_store_chunk(from, nx, nz);
+            mcc_chunk *nt = mcc_hmap_get(&moving, mcc_key2(nx, nz)) ? NULL : mcc_store_chunk(to, nx, nz);
+            if (nf) refresh_border(from, nf, -DIRS[d][0], -DIRS[d][1]);
+            if (nt) refresh_border(to, nt, -DIRS[d][0], -DIRS[d][1]);
+            if (nf || nt) refresh_border(to, c, DIRS[d][0], DIRS[d][1]);
+        }
+    }
+    for (size_t i = 0; i < m; i++)
+        for (mcc_store_listener *l = to->listeners; l; l = l->next)
+            if (l->chunk_added) l->chunk_added(l->ctx, moved[i]);
+    mcc_hmap_free(&moving);
+    free(moved);
 }
 
 /* ------------------------------------------------------------------ */

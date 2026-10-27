@@ -29,6 +29,8 @@ file(GLOB BOX3D_SRC third_party/box3d/src/*.c)
 add_library(box3d STATIC ${BOX3D_SRC})
 set_target_properties(box3d PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED YES C_EXTENSIONS YES)
 target_include_directories(box3d PUBLIC third_party/box3d/include PRIVATE third_party/box3d/src)
+# 每个有子世界的区域一个 Box3D 世界，默认上限 128 不够
+target_compile_definitions(box3d PUBLIC B3_MAX_WORLDS=4096)
 target_compile_options(box3d PRIVATE -w -ffp-contract=off)
 target_link_libraries(box3d PUBLIC Threads::Threads m)
 

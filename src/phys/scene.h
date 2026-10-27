@@ -102,6 +102,9 @@ bool phys_scene_next_body(phys_scene *s, uint32_t *it, phys_body **out);
 /* blocks：子世界的方块存储（地块坐标），须在 phys_sublevel_remove 之后才能释放 */
 bool phys_sublevel_create(phys_scene *s, int32_t id, const double pose[7], mcc_chunk_store *blocks);
 void phys_sublevel_remove(phys_scene *s, int32_t id);
+/* 区域合并/拆分时把刚体搬到另一个场景（保留位姿、速度、质量、休眠状态） */
+bool phys_body_migrate(phys_scene *src, phys_scene *dst, int32_t id);
+size_t phys_scene_body_count(phys_scene *s);
 void phys_body_set_center_of_mass(phys_scene *s, int32_t id, const double com[3]);
 void phys_body_set_local_bounds(phys_scene *s, int32_t id, const int32_t min[3], const int32_t max[3]);
 void phys_body_set_mass(phys_scene *s, int32_t id, double mass, const double inertia[9]);
