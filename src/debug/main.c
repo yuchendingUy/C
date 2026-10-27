@@ -182,8 +182,8 @@ int main(int argc, char **argv) {
     cfg.min_y = -64;
     cfg.height = 384;
     cfg.tick_threads = tick_threads;
-    /* 3 倍地球重力：方块 1 格 = 1 米时下落手感接近原版实体 */
-    cfg.phys = (phys_scene_config){ { 0, -9.81 * 3, 0 }, 0.1 };
+    /* 8.28 倍地球重力（3 × 2.76），调试时下落更利落 */
+    cfg.phys = (phys_scene_config){ { 0, -9.81 * 3 * 2.76, 0 }, 0.1 };
     cfg.post_tick_hook = mcc_viewer_post_tick;
     g_lv = mcc_level_create(&cfg);
     mcc_viewer *v = mcc_viewer_start(g_lv, port, g_web, on_spawn, NULL);
