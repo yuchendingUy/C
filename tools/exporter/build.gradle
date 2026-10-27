@@ -1,0 +1,37 @@
+/*
+ * mcc 注册表导出模组：和机械动力、Sable 一起跑一次专用服务端，
+ * 启动完成后把方块/方块状态/碰撞形状/物品/注册表/标签导出成 mcc 的数据格式，然后退出。
+ *
+ * 用法：gradle runExportServer -Dmcc.export.dir=<输出目录>
+ */
+plugins {
+    id("net.neoforged.moddev") version "2.0.141"
+}
+
+version = "1.0"
+group = "mcc"
+
+java { toolchain.languageVersion = JavaLanguageVersion.of(21) }
+
+repositories {
+    maven { url = "https://api.modrinth.com/maven" }
+}
+
+neoForge {
+    version = neo_version
+    mods { "mcc_exporter" { sourceSet(sourceSets.main) } }
+    runs {
+        /* GameTest 服务端：完整加载注册表、数据包与标签，不走专用服务端的 EULA 流程；导出后立即关服 */
+        exportServer {
+            type = "gameTestServer"
+            gameDirectory = project.file("run")
+            systemProperty("mcc.export.dir", System.getProperty("mcc.export.dir", project.file("out").absolutePath))
+            systemProperty("neoforge.enabledGameTestNamespaces", "mcc_exporter")
+        }
+    }
+}
+
+dependencies {
+    runtimeOnly("maven.modrinth:create:${create_version_id}")
+    runtimeOnly("maven.modrinth:sable:${sable_version_id}")
+}
