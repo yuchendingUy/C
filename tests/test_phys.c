@@ -1,92 +1,30 @@
 /*
- * 物理模块测试：方块结构落地、结构堆叠、水中漂浮、远离原点的精度
+ * 物理模块测试：方块结构落地、结构堆叠、水中漂浮、远离原点的精度，
+ * 以及改世界存储里的方块后物理立即生效（地形挖坑、子世界拆掉方块）
  */
 #include "../src/phys/scene.h"
 #include "../src/core/jobs.h"
-#include "../src/core/log.h"
 #include "../src/core/ebr.h"
+#include "testlib.h"
 #include <math.h>
 #include <stdio.h>
 
-static uint32_t STONE, WATER;
 static bool g_fail;
 
 #define CHECK(cond, ...) do { if (!(cond)) { mcc_error(__VA_ARGS__); g_fail = true; } else { mcc_info("  通过：" __VA_ARGS__); } } while (0)
 
-/* ---- 测试用的方块世界：用函数描述哪里是什么方块 ---- */
-typedef uint32_t (*block_fn)(int32_t x, int32_t y, int32_t z, void *ctx);
-
-static bool full_solid(uint32_t collider) { return collider == STONE; }
-
-/* VoxelNeighborhoodState::getState 的移植（全方块情形） */
-static uint32_t neighborhood(block_fn f, void *ctx, int32_t x, int32_t y, int32_t z) {
-    uint32_t c = f(x, y, z, ctx);
-    if (c == WATER) return PHYS_VS_CORNER;
-    if (!c) return PHYS_VS_EMPTY;
-    bool all = true, corner = true;
-    int both = 0;
-    const int d[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
-    for (int a = 0; a < 3; a++) {
-        bool n = full_solid(f(x - d[a][0], y - d[a][1], z - d[a][2], ctx));
-        bool p = full_solid(f(x + d[a][0], y + d[a][1], z + d[a][2], ctx));
-        if (!n || !p) all = false;
-        if (n && p) { corner = false; both++; }
-    }
-    if (all) return PHYS_VS_INTERIOR;
-    if (both == 1) return PHYS_VS_EDGE;
-    if (corner) return PHYS_VS_CORNER;
-    return PHYS_VS_FACE;
+static void load_terrain(mcc_chunk_store *st, terrain_ctx *t) {
+    test_fill(st, terrain, t, (t->ox >> 4) - 2, (t->ox + 112) >> 4, (t->oz >> 4) - 2, (t->oz >> 4) + 2, 32, 79);
 }
 
-static void upload_section(phys_scene *s, block_fn f, void *ctx, int32_t sx, int32_t sy, int32_t sz, bool global, int32_t obj) {
-    static uint32_t cells[4096];
-    bool any = false;
-    for (int i = 0; i < 4096; i++) {
-        int32_t x = (sx << 4) + (i & 15), z = (sz << 4) + ((i >> 4) & 15), y = (sy << 4) + (i >> 8);
-        uint32_t c = f(x, y, z, ctx);
-        cells[i] = c ? phys_pack(c, neighborhood(f, ctx, x, y, z)) : 0;
-        any |= c != 0;
-    }
-    if (any || global) phys_section_add(s, sx, sy, sz, cells, global, obj);
-}
-
-/* 地形：y < 61 全是石头（顶面 y=61）；x∈[64,96) 的区域挖出水池，水面顶 y=71 */
-typedef struct { int32_t ox, oz; } terrain_ctx;
-static uint32_t terrain(int32_t x, int32_t y, int32_t z, void *p) {
-    terrain_ctx *t = p;
-    int32_t lx = x - t->ox, lz = z - t->oz;
-    bool pool = lx >= 64 && lx < 96 && lz >= -16 && lz < 16;
-    if (pool) {
-        if (y < 50) return STONE;
-        if (y < 71) return WATER;
-        return 0;
-    }
-    return y < 61 ? STONE : 0;
-}
-
-/* 子世界：地块坐标里的 3×3×3 实心立方体 */
-typedef struct { int32_t bx, by, bz; } cube_ctx;
-static uint32_t cube(int32_t x, int32_t y, int32_t z, void *p) {
-    cube_ctx *c = p;
-    return (x >= c->bx && x < c->bx + 3 && y >= c->by && y < c->by + 3 && z >= c->bz && z < c->bz + 3) ? STONE : 0;
-}
-
-static void load_terrain(phys_scene *s, terrain_ctx *t) {
-    for (int32_t sx = (t->ox >> 4) - 2; sx <= ((t->ox + 112) >> 4); sx++)
-        for (int32_t sz = (t->oz >> 4) - 2; sz <= (t->oz >> 4) + 2; sz++)
-            for (int32_t sy = 2; sy <= 4; sy++) upload_section(s, terrain, t, sx, sy, sz, true, -1);
-}
-
-static void spawn_cube(phys_scene *s, int32_t id, cube_ctx *c, double x, double y, double z, double mass) {
+static void spawn_cube(phys_scene *s, int32_t id, mcc_chunk_store *st, cube_ctx *c, double x, double y, double z, double mass) {
+    test_cube_store(st, c);
     double pose[7] = { x, y, z, 0, 0, 0, 1 };
-    phys_sublevel_create(s, id, pose);
+    phys_sublevel_create(s, id, pose, st);
     int32_t mn[3] = { c->bx, c->by, c->bz }, mx[3] = { c->bx + 2, c->by + 2, c->bz + 2 };
     double com[3] = { c->bx + 1.5, c->by + 1.5, c->bz + 1.5 };
     phys_body_set_center_of_mass(s, id, com);
     phys_body_set_local_bounds(s, id, mn, mx);
-    for (int32_t sx = c->bx >> 4; sx <= (c->bx + 2) >> 4; sx++)
-        for (int32_t sy = c->by >> 4; sy <= (c->by + 2) >> 4; sy++)
-            for (int32_t sz = c->bz >> 4; sz <= (c->bz + 2) >> 4; sz++) upload_section(s, cube, c, sx, sy, sz, false, id);
     double I = mass * (9.0 + 9.0) / 12.0;
     double inertia[9] = { I, 0, 0, 0, I, 0, 0, 0, I };
     phys_body_set_mass(s, id, mass, inertia);
@@ -108,18 +46,21 @@ static double speed(phys_scene *s, int32_t id) {
 
 static void scenario(double ox, double oz, const char *name) {
     mcc_info("== 场景：%s（原点偏移 x=%.0f）", name, ox);
-    phys_scene_config cfg = { { 0, -9.81, 0 }, 0.1 };
-    phys_scene *s = phys_scene_create(&cfg);
+    mcc_chunk_store world;
+    mcc_store_init(&world, TEST_MIN_Y, TEST_HEIGHT);
     terrain_ctx t = { (int32_t)ox, (int32_t)oz };
-    load_terrain(s, &t);
+    load_terrain(&world, &t);
+    phys_scene_config cfg = { { 0, -9.81, 0 }, 0.1 };
+    phys_scene *s = phys_scene_create(&cfg, &world);
 
-    /* 地块坐标放在很远的地方，模拟 Sable 的地块区 */
+    /* 地块坐标放在很远的地方，模拟 Sable 的地块区；每个子世界一个自己的存储 */
+    mcc_chunk_store plots[3];
     cube_ctx c1 = { 20000000, 64, 20000000 };
     cube_ctx c2 = { 20000016, 64, 20000000 };
     cube_ctx c3 = { 20000032, 64, 20000000 };
-    spawn_cube(s, 1, &c1, ox + 0.0, 70.0, oz + 0.0, 27.0);
-    spawn_cube(s, 2, &c2, ox + 0.6, 76.0, oz + 0.3, 27.0);
-    spawn_cube(s, 3, &c3, ox + 80.0, 76.0, oz + 0.0, 5.0);
+    spawn_cube(s, 1, &plots[0], &c1, ox + 0.0, 70.0, oz + 0.0, 27.0);
+    spawn_cube(s, 2, &plots[1], &c2, ox + 0.6, 76.0, oz + 0.3, 27.0);
+    spawn_cube(s, 3, &plots[2], &c3, ox + 80.0, 76.0, oz + 0.0, 5.0);
 
     uint64_t t0 = mcc_nanotime();
     run(s, 160); /* 8 秒 */
@@ -141,24 +82,45 @@ static void scenario(double ox, double oz, const char *name) {
 
     phys_stats st;
     phys_scene_stats(s, &st);
-    mcc_info("  8 秒模拟耗时 %.1fms；地形格 %zu，区段 %zu，八叉树块 %zu，方块对 %llu，接触片 %llu", ms, st.cells, st.sections,
-             st.octree_chunks, (unsigned long long)st.pairs, (unsigned long long)st.manifolds);
+    mcc_info("  8 秒模拟耗时 %.1fms；地形格 %zu，地形区块 %zu，方块对 %llu，接触片 %llu", ms, st.cells, st.terrain_chunks,
+             (unsigned long long)st.pairs, (unsigned long long)st.manifolds);
+
+    /* 改世界存储里的地形：在结构1、2 下面挖一个 8×8、深 5 的坑。不通知物理，只改存储 */
+    int32_t bx = (int32_t)floor(p1[0]), bz = (int32_t)floor(p1[2]);
+    for (int32_t x = bx - 4; x < bx + 4; x++)
+        for (int32_t z = bz - 4; z < bz + 4; z++)
+            for (int32_t y = 56; y <= 60; y++) mcc_store_set(&world, x, y, z, 0);
+    run(s, 80);
+    phys_body_get_pose(s, 1, p1);
+    phys_body_get_pose(s, 2, p2);
+    CHECK(fabs(p1[1] - 57.5) < 0.05, "挖坑后结构1 立即被唤醒并落到坑底，中心高度 %.4f ≈ 57.5", p1[1]);
+    CHECK(p2[1] < 61.0 && speed(s, 2) < 0.05, "结构2 也跟着落进坑里并静止（中心高度 %.4f：叠在结构1 上为 60.5，滑到坑底为 57.5）", p2[1]);
+    double before = p2[1];
+
+    /* 改子世界自己的存储：拆掉结构2 的全部方块，它没有了碰撞体，应当穿过结构1 掉下去 */
+    for (int32_t x = c2.bx; x < c2.bx + 3; x++)
+        for (int32_t y = c2.by; y < c2.by + 3; y++)
+            for (int32_t z = c2.bz; z < c2.bz + 3; z++) mcc_store_set(&plots[1], x, y, z, 0);
+    run(s, 40);
+    phys_body_get_pose(s, 2, p2);
+    CHECK(p2[1] < before - 10.0, "拆掉结构2 的方块后它立即失去碰撞、穿过下方掉落（%.2f → %.2f）", before, p2[1]);
+
+    char err[256];
+    CHECK(mcc_store_verify(&world, err, sizeof err), "地形存储的物理位图与逐方块重算一致%s", "");
+
     phys_scene_destroy(s);
+    for (int i = 0; i < 3; i++) mcc_store_free(&plots[i]);
+    mcc_store_free(&world);
 }
 
 int main(void) {
     mcc_jobs_start(2);
-    STONE = phys_collider_new(1.0f, 1.0f, 0.0f, false, false, 0);
-    float mn[3] = { 0, 0, 0 }, mx[3] = { 1, 1, 1 };
-    phys_collider_add_box(STONE, mn, mx);
-    WATER = phys_collider_new(1.0f, 1.0f, 0.0f, true, false, 0);
-    phys_collider_add_box(WATER, mn, mx);
-    phys_colliders_finalize();
+    test_load_blocks();
 
     scenario(0, 0, "原点附近");
     scenario(10000000, 10000000, "x、z = 1000 万");
 
-    phys_colliders_free();
+    test_free_blocks();
     mcc_ebr_drain();
     mcc_jobs_stop();
     if (g_fail) { mcc_error("物理测试失败"); return 1; }

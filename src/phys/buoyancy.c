@@ -70,7 +70,7 @@ void phys_buoyancy_compute(phys_scene *s) {
         b->has_tick_force = false;
         b->tick_force = b3Vec3_zero;
         b->tick_torque = b3Vec3_zero;
-        if (!b->has_octree || !b->has_com || !b->has_bounds) continue;
+        if (!b->blocks || !b->has_com || !b->has_bounds) continue;
 
         int32_t *pairs;
         size_t n = phys_find_liquid_pairs(b, &pairs);
@@ -83,6 +83,8 @@ void phys_buoyancy_compute(phys_scene *s) {
         c.com = c.xf.p;
         c.force = c.torque = b3Vec3_zero;
 
+        mcc_store_cursor cur;
+        mcc_cursor_init(&cur, b->blocks);
         bool complex = (b->bmax[0] - b->bmin[0]) + (b->bmax[1] - b->bmin[1]) + (b->bmax[2] - b->bmin[2]) < 10;
         for (size_t i = 0; i < n; i++) {
             const int32_t *st = pairs + i * 6;      /* 液体方块（世界坐标） */
@@ -101,8 +103,7 @@ void phys_buoyancy_compute(phys_scene *s) {
         for (size_t i = 0; i < n; i++) {
             const int32_t *st = pairs + i * 6;
             const int32_t *dy = pairs + i * 6 + 3;
-            uint32_t cell = phys_scene_cell_at(s, b, dy[0], dy[1], dy[2]);
-            const phys_collider *col = phys_collider_get(phys_cell_collider(cell));
+            const phys_collider *col = phys_collider_get(mcc_state_collider(mcc_cursor_get(&cur, dy[0], dy[1], dy[2])));
             if (!col) continue;
             b3Vec3 local = { (float)(dy[0] + 0.5 - b->com[0]), (float)(dy[1] + 0.5 - b->com[1]), (float)(dy[2] + 0.5 - b->com[2]) };
             if (complex) {

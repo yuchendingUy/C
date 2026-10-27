@@ -78,6 +78,9 @@ mcc_state_t mcc_store_get(const mcc_chunk_store *st, int32_t x, int32_t y, int32
 mcc_state_t mcc_store_set(mcc_chunk_store *st, int32_t x, int32_t y, int32_t z, mcc_state_t state);
 
 /* ---- 读游标：缓存上一次命中的区块，供物理等热路径连续查询 ---- */
+/* 未缓存标记：区块坐标不可能是 INT32_MIN（方块坐标除以 16 后远小于此）。
+ * 不能用 UINT64_MAX：那是区块 (-1, -1) 的键 */
+#define MCC_CURSOR_NO_KEY 0x8000000080000000ULL
 typedef struct mcc_store_cursor {
     const mcc_chunk_store *store;
     uint64_t key;
@@ -86,7 +89,7 @@ typedef struct mcc_store_cursor {
 
 MCC_INLINE void mcc_cursor_init(mcc_store_cursor *cur, const mcc_chunk_store *st) {
     cur->store = st;
-    cur->key = UINT64_MAX;
+    cur->key = MCC_CURSOR_NO_KEY;
     cur->chunk = NULL;
 }
 

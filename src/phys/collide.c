@@ -182,6 +182,11 @@ size_t phys_find_pairs(const vside *t, vside *o, b3Transform xf_to, float predic
     const phys_body *tb = t->body;
     sc->pairs.len = 0;
     trav_ctx tc = { t, o, xf_to, prediction, liquid, sc };
+    /* 根：整个包围盒的外接球，没有重叠直接返回（远离地面的结构、不在水里的浮力查询） */
+    double ext = MCC_MAX(tb->bmax[0] - tb->bmin[0], MCC_MAX(tb->bmax[1] - tb->bmin[1], tb->bmax[2] - tb->bmin[2])) + 1;
+    if (!node_overlaps(&tc, (tb->bmin[0] + tb->bmax[0] + 1) * 0.5, (tb->bmin[1] + tb->bmax[1] + 1) * 0.5,
+                       (tb->bmin[2] + tb->bmax[2] + 1) * 0.5, ext * 0.5, true))
+        return 0;
     for (int32_t cx = tb->bmin[0] >> 4; cx <= tb->bmax[0] >> 4; cx++)
         for (int32_t cz = tb->bmin[2] >> 4; cz <= tb->bmax[2] >> 4; cz++) {
             const mcc_chunk *ch = mcc_store_chunk(tb->blocks, cx, cz);

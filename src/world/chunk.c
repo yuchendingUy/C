@@ -178,7 +178,8 @@ static void compute_section(const mcc_chunk_store *st, mcc_chunk *c, int i) {
     for (int y = 0; y < 16; y++)
         for (int z = 0; z < 16; z++) {
             uint32_t f = F[y + 1][z + 1];
-            uint32_t in = f & (f >> 1) & (f << 1) & F[y + 1][z] & F[y + 1][z + 2] & F[y][z + 1] & F[y + 2][z + 1];
+            /* 内部只看六个邻居，本方块自身不必是整块（被石头包住的楼梯也算内部） */
+            uint32_t in = (f >> 1) & (f << 1) & F[y + 1][z] & F[y + 1][z + 2] & F[y][z + 1] & F[y + 2][z + 1];
             uint16_t r = (uint16_t)(solid[y][z] & ~(in >> 1));
             s->phys->solid[y][z] = r;
             s->phys->liquid[y][z] = liquid[y][z];
