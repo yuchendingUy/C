@@ -157,6 +157,10 @@ int main(int argc, char **argv) {
 #ifdef SIGPIPE
     signal(SIGPIPE, SIG_IGN);
 #endif
+#ifdef _WIN32
+    /* Windows 默认计时精度 15.6ms：推进线程的定时等待会醒得很不准，调到 1ms */
+    timeBeginPeriod(1);
+#endif
 
     find_dirs();
     char p1[1100], p2[1100], p3[1100];

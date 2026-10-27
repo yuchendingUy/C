@@ -560,7 +560,7 @@ void phys_scene_tick(phys_scene *s) {
 static void gather_collisions(phys_scene *s, double dt) {
     uint32_t it = 0;
     void *v;
-    while (mcc_hmap_next(&s->bodies, &it, NULL, &v)) {
+    while (s->collisions.len < MAX_REPORTED_COLLISIONS && mcc_hmap_next(&s->bodies, &it, NULL, &v)) {
         phys_body *b = v;
         if (!b3Body_IsAwake(b->body)) continue;
         int cap = b3Body_GetContactCapacity(b->body);

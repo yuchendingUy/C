@@ -168,13 +168,12 @@ void mcc_jobs_submit(mcc_job_group *g, mcc_job_fn fn, void *arg) {
 }
 
 void mcc_jobs_wait(mcc_job_group *g) {
-    int idle = 0;
     job j;
+    /* 只让出不睡眠：等的通常是亚毫秒级的物理阶段，而 Windows 的睡眠精度是 1~15ms，
+     * 睡一次就可能把整个阶段拖慢一个数量级 */
     while (atomic_load_explicit(&g->pending, memory_order_acquire) > 0) {
-        if (find_job(&j)) { run_job(&j); idle = 0; continue; }
-        if (++idle < 128) { sched_yield(); continue; }
-        struct timespec ts = { 0, 20000 };
-        nanosleep(&ts, NULL);
+        if (find_job(&j)) { run_job(&j); continue; }
+        sched_yield();
     }
 }
 

@@ -8,6 +8,7 @@
  * 合力与合力矩存进刚体，每个物理子步重复施加。
  */
 #include "scene.h"
+#include "../core/jobs.h"
 #include <math.h>
 
 size_t phys_find_liquid_pairs(phys_body *body, int32_t **out_pairs);
@@ -62,19 +63,18 @@ static void do_float(buoy_ctx *c, const int32_t s[3], b3Vec3 local, double size,
     add_force_at(c, p, (b3Vec3){ 0.0f, (float)(10.5 * vol * strength), 0.0f });
 }
 
-void phys_buoyancy_compute(phys_scene *s) {
-    /* 遍历场景中所有子世界 */
-    uint32_t it = 0;
-    phys_body *b;
-    while (phys_scene_next_body(s, &it, &b)) {
+/* 一个结构的浮力与水阻力（只写它自己的字段，可以多个结构并行算） */
+static void body_buoyancy(phys_body *b, double gscale) {
+    {
         b->has_tick_force = false;
         b->tick_force = b3Vec3_zero;
         b->tick_torque = b3Vec3_zero;
-        if (!b->blocks || !b->has_com || !b->has_bounds) continue;
+        /* 睡着的结构不受力也不会动；醒来后的下一刻重新算 */
+        if (!b->blocks || !b->has_com || !b->has_bounds || !b3Body_IsAwake(b->body)) return;
 
-        int32_t *pairs;
+        int32_t *pairs;   /* 线程局部缓冲 */
         size_t n = phys_find_liquid_pairs(b, &pairs);
-        if (!n) continue;
+        if (!n) return;
 
         buoy_ctx c;
         c.xf = b3Body_GetTransform(b->body);
@@ -83,7 +83,6 @@ void phys_buoyancy_compute(phys_scene *s) {
         c.com = c.xf.p;
         c.force = c.torque = b3Vec3_zero;
 
-        double gscale = phys_scene_gravity_scale(s);
         mcc_store_cursor cur;
         mcc_cursor_init(&cur, b->blocks);
         bool complex = (b->bmax[0] - b->bmin[0]) + (b->bmax[1] - b->bmin[1]) + (b->bmax[2] - b->bmin[2]) < 10;
@@ -121,4 +120,22 @@ void phys_buoyancy_compute(phys_scene *s) {
         b->tick_torque = c.torque;
         b->has_tick_force = true;
     }
+}
+
+typedef struct { phys_body **bodies; double gscale; } buoy_job;
+
+static void buoy_range(void *arg, size_t begin, size_t end) {
+    buoy_job *j = arg;
+    for (size_t i = begin; i < end; i++) body_buoyancy(j->bodies[i], j->gscale);
+}
+
+void phys_buoyancy_compute(phys_scene *s) {
+    /* 各结构互不相关，分给任务线程池并行 */
+    MCC_VEC(phys_body *) list = { 0 };
+    uint32_t it = 0;
+    phys_body *b;
+    while (phys_scene_next_body(s, &it, &b)) mcc_vec_push(&list, b);
+    buoy_job j = { list.data, phys_scene_gravity_scale(s) };
+    mcc_jobs_parallel_for(list.len, 64, buoy_range, &j);
+    mcc_vec_free(&list);
 }

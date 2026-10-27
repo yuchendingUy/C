@@ -30,6 +30,8 @@
 #define CLUSTER_NORMAL_DOT 0.995f
 
 void phys_scene_count(phys_scene *s, uint64_t manifolds, uint64_t pairs);
+static bool g_stats_on;
+void phys_set_stats_enabled(bool on) { g_stats_on = on; }
 void phys_scene_count_time(phys_scene *s, uint64_t ns);
 
 /* ---------------- 体素侧 ---------------- */
@@ -530,7 +532,8 @@ const b3VoxelManifold *phys_voxel_manifolds(const b3VoxelQuery *q_in, int *count
     b3VoxelQuery qv = *q_in;
     qv.speculativeDistance = MCC_MAX(qv.speculativeDistance, B3_CONTACT_RECYCLE_DISTANCE);
     const b3VoxelQuery *q = &qv;
-    uint64_t t_start = mcc_nanotime();
+    bool stats = g_stats_on;
+    uint64_t t_start = stats ? mcc_nanotime() : 0;
     scratch *sc = &t_s;
     scratch_reset(sc);
     *count = 0;
@@ -568,19 +571,21 @@ const b3VoxelManifold *phys_voxel_manifolds(const b3VoxelQuery *q_in, int *count
         xf_to = xf_ba;
         pc.s_is_a = true;
     }
-    uint64_t ta = mcc_nanotime();
+    uint64_t ta = stats ? mcc_nanotime() : 0;
     size_t np = phys_find_pairs(trav, other, xf_to, q->speculativeDistance, false, sc);
-    uint64_t tb = mcc_nanotime();
+    uint64_t tb = stats ? mcc_nanotime() : 0;
     for (size_t i = 0; i < np; i++) collide_block_pair(&pc, &sc->pairs.data[i], sc);
-    uint64_t tc = mcc_nanotime();
+    uint64_t tc = stats ? mcc_nanotime() : 0;
     const b3VoxelManifold *res = emit(sc, count);
-    uint64_t td = mcc_nanotime();
-    atomic_fetch_add(&g_prof[0], tb - ta);
-    atomic_fetch_add(&g_prof[1], tc - tb);
-    atomic_fetch_add(&g_prof[2], td - tc);
-    atomic_fetch_add(&g_prof[3], sc->points.len);
-    phys_scene_count(scene, (uint64_t)*count, np);
-    phys_scene_count_time(scene, mcc_nanotime() - t_start);
+    if (stats) {
+        uint64_t td = mcc_nanotime();
+        atomic_fetch_add(&g_prof[0], tb - ta);
+        atomic_fetch_add(&g_prof[1], tc - tb);
+        atomic_fetch_add(&g_prof[2], td - tc);
+        atomic_fetch_add(&g_prof[3], sc->points.len);
+        phys_scene_count(scene, (uint64_t)*count, np);
+        phys_scene_count_time(scene, mcc_nanotime() - t_start);
+    }
     return res;
 }
 

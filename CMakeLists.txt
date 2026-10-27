@@ -46,7 +46,7 @@ target_link_libraries(mcc_core PUBLIC box3d Threads::Threads m)
 add_executable(mcc_debug src/debug/main.c src/debug/viewer.c)
 target_link_libraries(mcc_debug mcc_core)
 if(WIN32)
-    target_link_libraries(mcc_debug ws2_32)
+    target_link_libraries(mcc_debug ws2_32 winmm)
 endif()
 target_compile_definitions(mcc_debug PRIVATE MCC_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 

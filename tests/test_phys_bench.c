@@ -95,6 +95,7 @@ int main(int argc, char **argv) {
     int threads = argc > 1 ? atoi(argv[1]) : 2;
     mcc_jobs_start(threads);
     test_load_blocks();
+    phys_set_stats_enabled(true);
     int counts[] = { 50, 200, 500, 1000 };
     int ncount = 4;
     if (argc > 2) { counts[0] = atoi(argv[2]); ncount = 1; }
