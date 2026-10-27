@@ -282,8 +282,9 @@ function connect() {
       removeBody(dv.getInt32(1, true));
     } else if (type === 5) {                   // 推进统计
       const minTps = dv.getFloat32(1, true), avgTps = dv.getFloat32(5, true), ms = dv.getFloat32(9, true), maxMs = dv.getFloat32(13, true);
-      const n = dv.getUint32(17, true);
-      tpsText = n ? `TPS ${avgTps.toFixed(1)}（最低 ${minTps.toFixed(1)}）  每刻 ${ms.toFixed(2)}ms（最慢 ${maxMs.toFixed(2)}ms）  区域 ${n}`
+      const n = dv.getUint32(17, true), awake = dv.getUint32(21, true), total = dv.getUint32(25, true);
+      tpsText = n ? `TPS ${avgTps.toFixed(1)}（最低 ${minTps.toFixed(1)}）  每刻平均 ${ms.toFixed(2)}ms  这一秒最慢一刻 ${maxMs.toFixed(2)}ms  区域 ${n}\n` +
+                    `服务端结构 ${total} 个，醒着（在动）${awake} 个`
                   : 'TPS -（没有区域）';
     }
   };

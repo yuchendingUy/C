@@ -135,6 +135,7 @@ static void *tick_thread(void *p) {
         uint64_t took = end - start;
         r->tick_count++;
         r->tick_time_ema_ns = r->tick_time_ema_ns * 0.95 + (double)took * 0.05;
+        r->last_tick_ns = took;
         atomic_fetch_add(&s->ticks, 1);
         uint64_t prev = atomic_load(&s->max_tick);
         while (took > prev && !atomic_compare_exchange_weak(&s->max_tick, &prev, took)) {}

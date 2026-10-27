@@ -74,6 +74,7 @@ struct mcc_region {
     uint64_t next_tick_start;
     uint64_t tick_count;
     double tick_time_ema_ns;
+    uint64_t last_tick_ns;   /* 上一刻的实际耗时 */
 
     void *data;  /* 世界层的区域数据 */
 };

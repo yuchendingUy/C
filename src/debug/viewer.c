@@ -197,7 +197,10 @@ static client *find_client(mcc_viewer *v, uint32_t id) {
 
 typedef struct region_stat {
     uint32_t ticks;      /* 本统计周期内推进的刻数 */
-    float mspt;          /* 每刻耗时（指数平均，毫秒） */
+    uint32_t timed;      /* 其中有耗时记录的刻数 */
+    uint64_t sum_ns;     /* 这些刻的实际耗时之和 */
+    uint64_t max_ns;     /* 其中最慢一刻 */
+    uint32_t awake, total; /* 最近一刻醒着的 / 全部结构数 */
     double last;         /* 最近一次推进的时间（毫秒） */
 } region_stat;
 
@@ -335,8 +338,15 @@ void mcc_viewer_post_tick(void *vp, mcc_region *r, mcc_region_world *w) {
         rs = mcc_xcalloc(1, sizeof *rs);
         mcc_hmap_put(&v->region_stats, r->id, rs);
     }
+    /* 回调在推进里面，本刻还没结束：记上一刻的实际耗时（调度器量的，含本回调） */
     rs->ticks++;
-    rs->mspt = (float)(r->tick_time_ema_ns / 1e6);
+    if (r->last_tick_ns) {
+        rs->timed++;
+        rs->sum_ns += r->last_tick_ns;
+        rs->max_ns = MCC_MAX(rs->max_ns, r->last_tick_ns);
+    }
+    rs->awake = 0;
+    rs->total = (uint32_t)w->sublevels.count;
     rs->last = now_ms;
     pthread_mutex_unlock(&v->lock);
 
@@ -384,6 +394,8 @@ void mcc_viewer_post_tick(void *vp, mcc_region *r, mcc_region_world *w) {
     end_poses(&awake, na);
 
     pthread_mutex_lock(&v->lock);
+    region_stat *rs2 = mcc_hmap_get(&v->region_stats, r->id);
+    if (rs2) rs2->awake = na;
     for (size_t k = 0; k < v->clients.len; k++) {
         client *c = v->clients.data[k];
         if (!c->ws || c->dead) continue;
@@ -643,8 +655,9 @@ static void *net_main(void *p) {
             double el = (now - v->stats_at) / 1000.0;
             if (v->stats_at == 0) el = 1;
             v->stats_at = now;
-            float min_tps = 0, sum_tps = 0, sum_ms = 0, max_ms = 0;
-            uint32_t nr = 0;
+            float min_tps = 0, sum_tps = 0;
+            uint64_t sum_ns = 0, max_ns = 0, timed = 0;
+            uint32_t nr = 0, awake = 0, total = 0;
             uint32_t it = 0;
             uint64_t key;
             void *val;
@@ -656,17 +669,24 @@ static void *net_main(void *p) {
                     continue;
                 }
                 float tps = (float)(rs->ticks / el);
-                rs->ticks = 0;
                 min_tps = nr ? MCC_MIN(min_tps, tps) : tps;
                 sum_tps += tps;
-                sum_ms += rs->mspt;
-                max_ms = MCC_MAX(max_ms, rs->mspt);
+                sum_ns += rs->sum_ns;
+                timed += rs->timed;
+                max_ns = MCC_MAX(max_ns, rs->max_ns);
+                awake += rs->awake;
+                total += rs->total;
+                rs->ticks = rs->timed = 0;
+                rs->sum_ns = rs->max_ns = 0;
                 nr++;
             }
-            uint8_t msg[21] = { 5 };
-            float vals[4] = { min_tps, nr ? sum_tps / nr : 0, nr ? sum_ms / nr : 0, max_ms };
+            /* 平均：这一秒内所有区域所有刻的平均耗时；最慢：这一秒内最慢的单独一刻 */
+            uint8_t msg[29] = { 5 };
+            float vals[4] = { min_tps, nr ? sum_tps / nr : 0, timed ? (float)(sum_ns / (double)timed / 1e6) : 0,
+                              (float)(max_ns / 1e6) };
+            uint32_t cnt[3] = { nr, awake, total };
             memcpy(msg + 1, vals, 16);
-            memcpy(msg + 17, &nr, 4);
+            memcpy(msg + 17, cnt, 12);
             for (size_t i = 0; i < v->clients.len; i++) ws_send(v->clients.data[i], msg, sizeof msg);
         }
         /* 回收断开的连接 */
