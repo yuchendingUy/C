@@ -1,0 +1,373 @@
+<title>mcc 多线程结构</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* 布局：单栏技术说明，每节一张图 + 图注，图在自己的横向滚动容器里 */
+:root {
+  --bg: #f4f6f9;
+  --panel: #ffffff;
+  --fg: #18202c;
+  --muted: #5b6676;
+  --line: #c6cdd8;
+  --a: #2d6ad1;
+  --b: #138a68;
+  --d: #7b4cc4;
+  --warn: #c2620f;
+  --sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11151c; --panel: #181e27; --fg: #e2e7ee; --muted: #97a2b2; --line: #2f3946;
+    --a: #6d9fff; --b: #3cc79c; --d: #a989f2; --warn: #f2a14b; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11151c; --panel: #181e27; --fg: #e2e7ee; --muted: #97a2b2; --line: #2f3946;
+  --a: #6d9fff; --b: #3cc79c; --d: #a989f2; --warn: #f2a14b; color-scheme: dark;
+}
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 15px; line-height: 1.7;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 64px;
+}
+main { max-width: 860px; margin: 0 auto; display: grid; gap: 40px; }
+header { display: grid; gap: 8px; }
+h1 { font-size: 28px; line-height: 1.3; margin: 0; text-wrap: balance; }
+h2 { font-size: 19px; margin: 0; text-wrap: balance; }
+.lede { color: var(--muted); margin: 0; max-width: 40em; }
+section { display: grid; gap: 12px; }
+section > p { margin: 0; max-width: 42em; }
+code { font-family: var(--mono); font-size: 0.88em; }
+.layer { font-family: var(--mono); font-size: 12px; letter-spacing: 0.06em; color: var(--muted); }
+figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.scroll { overflow-x: auto; padding: 12px; }
+svg { display: block; width: 100%; min-width: 600px; height: auto; color: var(--fg); font-family: var(--sans); }
+figcaption { border-top: 1px solid var(--line); padding: 10px 14px; color: var(--muted); font-size: 14px; }
+.fg { fill: var(--fg); }
+.mu { fill: var(--muted); }
+.ln { stroke: var(--line); }
+.sk { stroke: var(--fg); }
+.ra { fill: var(--a); } .rb { fill: var(--b); } .rd { fill: var(--d); } .rw { fill: var(--warn); }
+.sa { stroke: var(--a); } .sb { stroke: var(--b); } .sw { stroke: var(--warn); }
+.pn { fill: var(--panel); }
+.mono { font-family: var(--mono); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.tbl { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+th { font-weight: 500; color: var(--muted); font-size: 13px; }
+.pill { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid currentColor; white-space: nowrap; }
+.ok { color: var(--b); } .no { color: var(--warn); }
+</style>
+
+<main>
+<header>
+  <h1>mcc 多线程结构</h1>
+  <p class="lede">三层：世界切成互不相干的区域；一组推进线程按时间表轮流推进区域；区域内部的重计算（目前是物理）再拆给任务线程池并行。</p>
+</header>
+
+<section>
+  <span class="layer">第一层 · src/region/regionizer.c</span>
+  <h2>把世界切成区域</h2>
+  <p>世界按区段划格，一格是 16×16 个区块。有已加载区块的格叫活区段，它外面 2 圈算缓冲区，和它属于同一个区域。所以任何两个区域之间必定隔着空区段，没有共享的可变数据。</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 600 410" role="img" aria-label="两个区域在区段网格上的范围：活区段外两圈是缓冲区段，两个区域中间隔着空区段，可以由两个线程同时推进">
+      <defs>
+        <marker id="ar1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+      </defs>
+      <!-- 比例 -->
+      <line x1="22" y1="30" x2="56" y2="30" class="sk" stroke-width="1"/>
+      <line x1="22" y1="26" x2="22" y2="34" class="sk"/><line x1="56" y1="26" x2="56" y2="34" class="sk"/>
+      <text x="62" y="34" font-size="12" class="mu">1 格 = 1 个区段 = 16×16 区块 = 256×256 方块</text>
+      <!-- 区域 A：缓冲 + 活区段 -->
+      <rect x="90" y="74" width="204" height="204" class="ra" fill-opacity="0.13"/>
+      <rect x="158" y="142" width="34" height="34" class="ra" fill-opacity="0.8"/>
+      <rect x="192" y="142" width="34" height="34" class="ra" fill-opacity="0.8"/>
+      <rect x="192" y="176" width="34" height="34" class="ra" fill-opacity="0.8"/>
+      <rect x="90" y="74" width="204" height="204" fill="none" class="sa" stroke-width="2"/>
+      <text x="90" y="66" font-size="13" font-weight="700" class="ra">区域 A</text>
+      <!-- 区域 B -->
+      <rect x="396" y="108" width="170" height="170" class="rb" fill-opacity="0.13"/>
+      <rect x="464" y="176" width="34" height="34" class="rb" fill-opacity="0.8"/>
+      <rect x="396" y="108" width="170" height="170" fill="none" class="sb" stroke-width="2"/>
+      <text x="396" y="100" font-size="13" font-weight="700" class="rb">区域 B</text>
+      <!-- 网格 -->
+      <g class="ln" stroke-width="1">
+        <path d="M22,40 H566 M22,74 H566 M22,108 H566 M22,142 H566 M22,176 H566 M22,210 H566 M22,244 H566 M22,278 H566 M22,312 H566 M22,346 H566"/>
+        <path d="M22,40 V346 M56,40 V346 M90,40 V346 M124,40 V346 M158,40 V346 M192,40 V346 M226,40 V346 M260,40 V346 M294,40 V346 M328,40 V346 M362,40 V346 M396,40 V346 M430,40 V346 M464,40 V346 M498,40 V346 M532,40 V346 M566,40 V346"/>
+      </g>
+      <!-- 间隔 -->
+      <line x1="298" y1="300" x2="392" y2="300" stroke="currentColor" stroke-width="1.5" marker-start="url(#ar1)" marker-end="url(#ar1)"/>
+      <text x="345" y="294" font-size="12" text-anchor="middle" class="fg">空区段</text>
+      <text x="345" y="326" font-size="12" text-anchor="middle" class="mu">两边互不接触</text>
+      <!-- 图例 -->
+      <rect x="22" y="372" width="14" height="14" class="ra" fill-opacity="0.8"/>
+      <text x="42" y="384" font-size="12" class="fg">活区段：里面有已加载的区块（玩家附近）</text>
+      <rect x="320" y="372" width="14" height="14" class="ra" fill-opacity="0.13" stroke="var(--a)"/>
+      <text x="340" y="384" font-size="12" class="fg">缓冲区段：活区段外 2 圈</text>
+    </svg>
+    </div>
+    <figcaption>A、B 各是一个区域。某一时刻一个区域只被一个线程推进，A 和 B 可以同时由两个线程推进，彼此不碰对方的数据，也就不用加锁。</figcaption>
+  </figure>
+
+  <p>玩家走动会让区域靠近或分开。两个区域相距 1 个区段以内就必须合并；一个区域推完一刻后，如果死区段（周围已没有加载区块）超过 10%，就删掉死区段，按连通性拆成几块。</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 640 200" role="img" aria-label="三步：两个区域分开时各自推进；靠近到一个区段内时合并成一个区域；走远后死区段超过百分之十，推完这一刻后拆成两个区域">
+      <defs>
+        <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+        <pattern id="grid14" width="14" height="14" patternUnits="userSpaceOnUse"><path d="M14,0 V14 H0" fill="none" stroke="var(--line)" stroke-width="1"/></pattern>
+      </defs>
+      <!-- 面板 1：x 20 -->
+      <g transform="translate(20,30)">
+        <rect x="0" y="14" width="70" height="70" class="ra" fill-opacity="0.15"/>
+        <rect x="28" y="42" width="14" height="14" class="ra" fill-opacity="0.85"/>
+        <rect x="0" y="14" width="70" height="70" fill="none" class="sa" stroke-width="1.5"/>
+        <rect x="84" y="14" width="70" height="70" class="rb" fill-opacity="0.15"/>
+        <rect x="112" y="42" width="14" height="14" class="rb" fill-opacity="0.85"/>
+        <rect x="84" y="14" width="70" height="70" fill="none" class="sb" stroke-width="1.5"/>
+        <rect x="0" y="0" width="168" height="98" fill="url(#grid14)" stroke="var(--line)"/>
+        <text x="84" y="124" font-size="12" text-anchor="middle" class="fg">① 分开：两个区域</text>
+        <text x="84" y="142" font-size="12" text-anchor="middle" class="mu">各推各的</text>
+      </g>
+      <line x1="196" y1="79" x2="224" y2="79" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar2)"/>
+      <!-- 面板 2：x 236 -->
+      <g transform="translate(236,30)">
+        <rect x="0" y="14" width="140" height="70" class="ra" fill-opacity="0.15"/>
+        <rect x="28" y="42" width="14" height="14" class="ra" fill-opacity="0.85"/>
+        <rect x="98" y="42" width="14" height="14" class="ra" fill-opacity="0.85"/>
+        <rect x="0" y="14" width="140" height="70" fill="none" class="sa" stroke-width="1.5"/>
+        <rect x="0" y="0" width="168" height="98" fill="url(#grid14)" stroke="var(--line)"/>
+        <text x="84" y="124" font-size="12" text-anchor="middle" class="fg">② 靠近到 1 个区段内</text>
+        <text x="84" y="142" font-size="12" text-anchor="middle" class="mu">合并成一个区域</text>
+        <text x="84" y="160" font-size="12" text-anchor="middle" class="mu">对方正在推进就等它推完再并</text>
+      </g>
+      <line x1="412" y1="79" x2="440" y2="79" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar2)"/>
+      <!-- 面板 3：x 452 -->
+      <g transform="translate(452,30)">
+        <rect x="0" y="14" width="70" height="70" class="ra" fill-opacity="0.15"/>
+        <rect x="28" y="42" width="14" height="14" class="ra" fill-opacity="0.85"/>
+        <rect x="0" y="14" width="70" height="70" fill="none" class="sa" stroke-width="1.5"/>
+        <rect x="70" y="14" width="42" height="70" fill="none" stroke="var(--muted)" stroke-dasharray="3 3"/>
+        <rect x="112" y="14" width="56" height="70" class="rb" fill-opacity="0.15"/>
+        <rect x="140" y="42" width="14" height="14" class="rb" fill-opacity="0.85"/>
+        <rect x="112" y="14" width="56" height="70" fill="none" class="sb" stroke-width="1.5"/>
+        <rect x="0" y="0" width="168" height="98" fill="url(#grid14)" stroke="var(--line)"/>
+        <text x="84" y="124" font-size="12" text-anchor="middle" class="fg">③ 走远，死区段 &gt; 10%</text>
+        <text x="84" y="142" font-size="12" text-anchor="middle" class="mu">推完这一刻：删掉虚线格</text>
+        <text x="84" y="160" font-size="12" text-anchor="middle" class="mu">按连通性拆成两个区域</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>合并、拆分和区块登记在一把全局锁下进行（不频繁）。查"某个区块归哪个区域"不加锁：并发哈希表 + 纪元回收，旧表等所有读者离开后才释放。</figcaption>
+  </figure>
+</section>
+
+<section>
+  <span class="layer">第二层 · src/region/tick_scheduler.c</span>
+  <h2>推进线程轮流推进区域</h2>
+  <p>固定数量的推进线程共用一个按"下一刻开始时间"排序的小顶堆。线程取堆顶到期的区域，把它从就绪抢成推进中，推完一刻放回堆里。每个区域各自按每 50ms 一刻走，谁也不等谁。</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 760 250" role="img" aria-label="时间轴：三个推进线程在 150 毫秒内推进 A、B、C、D 四个区域。C 有一刻卡了 60 毫秒，只拖慢 C 自己，C 推完后立刻补下一刻，A、B、D 照常每 50 毫秒一刻">
+      <defs>
+        <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+      </defs>
+      <!-- 小顶堆 -->
+      <text x="20" y="30" font-size="13" font-weight="700" class="fg">小顶堆（按到期时间）</text>
+      <rect x="20" y="42" width="150" height="30" class="pn" stroke="var(--fg)"/>
+      <text x="32" y="62" font-size="12" class="fg mono">A  到期 0ms</text>
+      <rect x="20" y="72" width="150" height="30" class="pn" stroke="var(--line)"/>
+      <text x="32" y="92" font-size="12" class="fg mono">B  到期 0ms</text>
+      <rect x="20" y="102" width="150" height="30" class="pn" stroke="var(--line)"/>
+      <text x="32" y="122" font-size="12" class="fg mono">C  到期 0ms</text>
+      <rect x="20" y="132" width="150" height="30" class="pn" stroke="var(--line)"/>
+      <text x="32" y="152" font-size="12" class="fg mono">D  到期 10ms</text>
+      <text x="20" y="184" font-size="12" class="mu">堆顶 = 最早到期</text>
+      <text x="20" y="202" font-size="12" class="mu">推完一刻 → 时间 +50ms 放回</text>
+      <path d="M172,57 C188,57 186,66 196,66" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar3)"/>
+      <!-- 时间网格：x = 240 + 3.4 * ms -->
+      <g stroke="var(--line)" stroke-dasharray="3 3">
+        <line x1="240" y1="40" x2="240" y2="186"/><line x1="410" y1="40" x2="410" y2="186"/>
+        <line x1="580" y1="40" x2="580" y2="186"/><line x1="750" y1="40" x2="750" y2="186"/>
+      </g>
+      <line x1="240" y1="186" x2="750" y2="186" class="sk"/>
+      <g font-size="11" class="mu" text-anchor="middle">
+        <text x="240" y="202">0</text><text x="410" y="202">50ms</text><text x="580" y="202">100ms</text><text x="750" y="202">150ms</text>
+      </g>
+      <text x="410" y="34" font-size="11" text-anchor="middle" class="mu">第 2 刻计划</text>
+      <text x="580" y="34" font-size="11" text-anchor="middle" class="mu">第 3 刻计划</text>
+      <!-- 线程标签 -->
+      <g font-size="12" class="fg" text-anchor="end">
+        <text x="234" y="71">线程0</text><text x="234" y="116">线程1</text><text x="234" y="161">线程2</text>
+      </g>
+      <!-- 线程0：A 0-14, A 50-64, D 64-80, A 100-114, D 114-130 -->
+      <g font-size="12" font-weight="700" text-anchor="middle" fill="#fff">
+        <rect x="240" y="50" width="47.6" height="32" class="ra"/><text x="263.8" y="71">A</text>
+        <rect x="410" y="50" width="47.6" height="32" class="ra"/><text x="433.8" y="71">A</text>
+        <rect x="457.6" y="50" width="54.4" height="32" class="rd"/><text x="484.8" y="71">D</text>
+        <rect x="580" y="50" width="47.6" height="32" class="ra"/><text x="603.8" y="71">A</text>
+        <rect x="627.6" y="50" width="54.4" height="32" class="rd"/><text x="654.8" y="71">D</text>
+        <!-- 线程1：B 0-22, B 50-72, B 100-122 -->
+        <rect x="240" y="95" width="74.8" height="32" class="rb"/><text x="277.4" y="116">B</text>
+        <rect x="410" y="95" width="74.8" height="32" class="rb"/><text x="447.4" y="116">B</text>
+        <rect x="580" y="95" width="74.8" height="32" class="rb"/><text x="617.4" y="116">B</text>
+        <!-- 线程2：C 0-10, D 10-26, C 50-110（卡）, C 110-122（补） -->
+        <rect x="240" y="140" width="34" height="32" class="rw"/><text x="257" y="161">C</text>
+        <rect x="274" y="140" width="54.4" height="32" class="rd"/><text x="301.2" y="161">D</text>
+        <rect x="410" y="140" width="204" height="32" class="rw"/><text x="512" y="161">C 这一刻卡了 60ms</text>
+        <rect x="614" y="140" width="40.8" height="32" class="rw" stroke="var(--panel)" stroke-width="2"/><text x="634.4" y="161">补</text>
+      </g>
+      <text x="240" y="232" font-size="12" class="mu">C 落后：下一刻按计划时间算早已到期，推完立刻补；落后超过 1 秒才放弃追赶。A、B、D 不受影响。</text>
+    </svg>
+    </div>
+    <figcaption>3 个推进线程、4 个区域、150ms。哪个线程空了就去堆顶取下一个到期的区域，区域不固定在某个线程上。</figcaption>
+  </figure>
+
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 640 215" role="img" aria-label="区域状态机：就绪被推进线程抢到后变为推进中，推完一刻回到就绪；过渡态等正在推进的区域推完并进来后变为就绪；被合并或拆分后变为死亡">
+      <defs>
+        <marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+      </defs>
+      <g font-size="13" text-anchor="middle">
+        <rect x="40" y="62" width="140" height="48" rx="6" class="pn" stroke="var(--fg)" stroke-width="1.5"/>
+        <text x="110" y="83" class="fg mono" font-weight="600">READY</text><text x="110" y="101" font-size="12" class="mu">就绪，在堆里排队</text>
+        <rect x="310" y="62" width="140" height="48" rx="6" class="pn" stroke="var(--a)" stroke-width="2"/>
+        <text x="380" y="83" class="ra mono" font-weight="600">TICKING</text><text x="380" y="101" font-size="12" class="mu">只有一个线程在推进</text>
+        <rect x="40" y="155" width="140" height="48" rx="6" class="pn" stroke="var(--fg)" stroke-dasharray="4 3"/>
+        <text x="110" y="176" class="fg mono" font-weight="600">TRANSIENT</text><text x="110" y="194" font-size="12" class="mu">过渡，不参与调度</text>
+        <rect x="480" y="155" width="140" height="48" rx="6" class="pn" stroke="var(--muted)"/>
+        <text x="550" y="176" class="mu mono" font-weight="600">DEAD</text><text x="550" y="194" font-size="12" class="mu">内存交给纪元回收</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.5" fill="none">
+        <line x1="180" y1="76" x2="306" y2="76" marker-end="url(#ar4)"/>
+        <line x1="310" y1="98" x2="184" y2="98" marker-end="url(#ar4)"/>
+        <line x1="110" y1="155" x2="110" y2="114" marker-end="url(#ar4)"/>
+        <line x1="420" y1="110" x2="500" y2="152" marker-end="url(#ar4)"/>
+        <path d="M180,106 C260,150 360,190 476,184" marker-end="url(#ar4)"/>
+      </g>
+      <g font-size="12" class="fg">
+        <text x="245" y="68" text-anchor="middle">推进线程抢到</text>
+        <text x="245" y="118" text-anchor="middle">推完一刻，放回堆</text>
+        <text x="120" y="140">正在推进的区域推完并进来</text>
+        <text x="462" y="126">推完后被拆分 / 并走</text>
+        <text x="300" y="196" text-anchor="middle">被合并进别的区域</text>
+      </g>
+      <text x="40" y="34" font-size="12" class="mu">抢占是一次原子比较交换：两个线程同时取到同一个区域，只有一个能成功。</text>
+    </svg>
+    </div>
+    <figcaption>区域的四种状态。推进中的区域不能被合并或修改，要并它的操作先登记下来，等它推完一刻释放时再处理。</figcaption>
+  </figure>
+</section>
+
+<section>
+  <span class="layer">第三层 · src/core/jobs.c</span>
+  <h2>区域内部的重活拆给任务线程池</h2>
+  <p>一个区域的普通逻辑由它的推进线程顺序执行。像物理步进这样的大计算，Box3D 本身能并行，它的任务接口接到了 mcc 的线程池上，这一刻的物理会分散到所有工作线程一起算。</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 700 300" role="img" aria-label="推进线程执行到物理步进时，把接触生成和求解拆成小任务放进工作线程的队列；工作线程从自己队尾取任务，空闲时偷别人的队头；推进线程等待期间也去取任务帮忙">
+      <defs>
+        <marker id="ar5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+        <marker id="ar5a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--a)"/></marker>
+      </defs>
+      <!-- 推进线程 -->
+      <rect x="20" y="30" width="220" height="250" rx="6" class="pn" stroke="var(--fg)"/>
+      <text x="36" y="56" font-size="13" font-weight="700" class="fg">推进线程（推进区域 A 的一刻）</text>
+      <g font-size="12">
+        <rect x="36" y="72" width="188" height="36" class="pn" stroke="var(--line)"/><text x="48" y="95" class="fg">执行投递来的区块任务</text>
+        <rect x="36" y="116" width="188" height="36" class="pn" stroke="var(--line)" stroke-dasharray="4 3"/><text x="48" y="139" class="mu">方块、实体、玩家（未写）</text>
+        <rect x="36" y="160" width="188" height="36" class="ra" fill-opacity="0.14" stroke="var(--a)" stroke-width="1.5"/><text x="48" y="183" class="fg mono">物理步进 b3World_Step</text>
+        <rect x="36" y="204" width="188" height="36" class="pn" stroke="var(--line)"/><text x="48" y="227" class="fg">收集碰撞上报</text>
+      </g>
+      <text x="36" y="266" font-size="12" class="mu">上到下顺序执行</text>
+      <!-- 拆任务 -->
+      <line x1="224" y1="178" x2="318" y2="178" class="sa" stroke-width="2" marker-end="url(#ar5a)"/>
+      <text x="270" y="170" font-size="12" text-anchor="middle" class="ra">拆成小任务</text>
+      <!-- 工作线程 -->
+      <text x="330" y="40" font-size="13" font-weight="700" class="fg">工作线程（每个一条双端队列）</text>
+      <g font-size="12" text-anchor="middle" class="fg">
+        <text x="360" y="72">线程0</text><text x="450" y="72">线程1</text><text x="540" y="72">线程2</text><text x="630" y="72">线程3</text>
+      </g>
+      <g stroke="var(--line)" class="pn">
+        <rect x="330" y="80" width="60" height="150"/><rect x="420" y="80" width="60" height="150"/>
+        <rect x="510" y="80" width="60" height="150"/><rect x="600" y="80" width="60" height="150"/>
+      </g>
+      <!-- 任务块：底部是队头（最早放入），顶部是队尾 -->
+      <g class="ra" fill-opacity="0.8">
+        <rect x="336" y="206" width="48" height="18"/><rect x="336" y="184" width="48" height="18"/><rect x="336" y="162" width="48" height="18"/><rect x="336" y="140" width="48" height="18"/>
+        <rect x="426" y="206" width="48" height="18"/><rect x="426" y="184" width="48" height="18"/>
+        <rect x="516" y="206" width="48" height="18"/><rect x="516" y="184" width="48" height="18"/><rect x="516" y="162" width="48" height="18"/>
+      </g>
+      <text x="630" y="160" font-size="12" text-anchor="middle" class="mu">空了</text>
+      <g font-size="11" class="mu">
+        <text x="300" y="138" text-anchor="end">队尾</text><text x="300" y="220" text-anchor="end">队头</text>
+      </g>
+      <line x1="304" y1="134" x2="330" y2="146" class="ln"/><line x1="304" y1="216" x2="330" y2="214" class="ln"/>
+      <!-- 从自己队尾取 -->
+      <path d="M360,138 C360,118 372,108 384,104" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar5)"/>
+      <text x="392" y="104" font-size="11" class="fg">自己从队尾取</text>
+      <!-- 偷 -->
+      <path d="M630,232 C630,262 400,268 372,232" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#ar5)"/>
+      <text x="512" y="270" font-size="12" text-anchor="middle" class="fg">空闲时偷别人的队头</text>
+      <!-- 推进线程帮忙 -->
+      <path d="M224,190 C270,220 290,280 330,282" fill="none" class="sa" stroke-width="1.5" stroke-dasharray="5 4"/>
+      <text x="250" y="292" font-size="11" class="ra">等结果时自己也取任务做</text>
+    </svg>
+    </div>
+    <figcaption>工作窃取：先做自己队尾刚放进去的任务（数据还在缓存里），没活了随机去别人队头偷。推进线程提交任务后不干等，也去取任务做，直到这批全部完成才继续往下走。</figcaption>
+  </figure>
+</section>
+
+<section>
+  <span class="layer">跨区域 · mcc_regionizer_queue_chunk_task</span>
+  <h2>跨区域的事用投递，不直接改</h2>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 640 160" role="img" aria-label="区域 A 的线程要改区域 B 里的区块时，不直接改，而是把任务投进 B 的区块任务队列，由 B 自己的线程在推进时执行">
+      <defs>
+        <marker id="ar6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+      </defs>
+      <rect x="20" y="30" width="200" height="100" rx="6" class="ra" fill-opacity="0.1" stroke="var(--a)" stroke-width="1.5"/>
+      <text x="36" y="54" font-size="13" font-weight="700" class="ra">区域 A</text>
+      <text x="36" y="82" font-size="12" class="fg">A 的线程想改</text>
+      <text x="36" y="100" font-size="12" class="fg">B 里的一个区块</text>
+      <rect x="380" y="30" width="240" height="100" rx="6" class="rb" fill-opacity="0.1" stroke="var(--b)" stroke-width="1.5"/>
+      <text x="396" y="54" font-size="13" font-weight="700" class="rb">区域 B</text>
+      <text x="396" y="76" font-size="12" class="fg">区块任务队列</text>
+      <g class="rb" fill-opacity="0.75">
+        <rect x="396" y="86" width="22" height="22"/><rect x="422" y="86" width="22" height="22"/><rect x="448" y="86" width="22" height="22"/>
+      </g>
+      <line x1="220" y1="90" x2="390" y2="97" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar6)"/>
+      <text x="300" y="82" font-size="12" text-anchor="middle" class="fg">投递任务</text>
+      <path d="M474,97 C510,97 520,70 548,70" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar6)"/>
+      <text x="556" y="74" font-size="12" class="fg">B 的线程</text>
+      <text x="556" y="92" font-size="12" class="fg">推进时执行</text>
+      <text x="20" y="152" font-size="12" class="mu">区域合并或拆分时，队列里没执行的任务跟着区块搬到新的区域。</text>
+    </svg>
+    </div>
+    <figcaption>任何数据只由拥有它的区域线程修改，别的区域想动它只能投递任务。这是"区域之间不加锁"成立的前提。</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>现在做到哪</h2>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>部分</th><th>状态</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>区域划分、合并、拆分</td><td><span class="pill ok">完成</span></td><td>测试 8 秒、上百万次加载卸载，一致性自检全部通过</td></tr>
+      <tr><td>推进调度器</td><td><span class="pill ok">完成</span></td><td>测试里每一刻跑的是假的推进函数</td></tr>
+      <tr><td>任务线程池</td><td><span class="pill ok">完成</span></td><td>Box3D 物理已接入</td></tr>
+      <tr><td>每一刻真正的游戏内容</td><td><span class="pill no">未写</span></td><td>方块、实体、玩家、网络</td></tr>
+      <tr><td>物理场景跟着区域合并拆分</td><td><span class="pill no">未写</span></td><td>刚体要在两个场景之间搬家</td></tr>
+      <tr><td>世界区块存储（按区域归属）</td><td><span class="pill no">进行中</span></td><td>只由拥有它的区域线程写；物理步进时这个区域没有写入，工作线程可以并发只读</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+</main>
