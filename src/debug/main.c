@@ -5,6 +5,7 @@
  * 网页上可以召唤物理结构（随机形状，从空中落下）、清空。
  *
  * 用法：mcc_debug [端口=8080] [推进线程=2] [任务线程=核数-推进线程]
+ * 数据文件找法：程序所在目录下的 data/ 与 viewer/（发布包），找不到再用源码目录
  */
 #include "viewer.h"
 #include "../core/jobs.h"
@@ -17,6 +18,28 @@
 #include <unistd.h>
 
 #define AREA 6 /* 地形 (2×AREA)² 个区块 */
+
+static char g_data[1024], g_web[1024];
+
+/* 先找程序所在目录（发布包布局：mcc_debug、data/、viewer/），再找源码目录 */
+static void find_dirs(void) {
+    char exe[900];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n > 0) {
+        exe[n] = 0;
+        char *slash = strrchr(exe, '/');
+        if (slash) *slash = 0;
+        char probe[1100];
+        snprintf(probe, sizeof probe, "%s/data/blocks.txt", exe);
+        if (access(probe, R_OK) == 0) {
+            snprintf(g_data, sizeof g_data, "%s/data", exe);
+            snprintf(g_web, sizeof g_web, "%s/viewer", exe);
+            return;
+        }
+    }
+    snprintf(g_data, sizeof g_data, "%s/data", MCC_SOURCE_DIR);
+    snprintf(g_web, sizeof g_web, "%s/tools/viewer", MCC_SOURCE_DIR);
+}
 
 static volatile sig_atomic_t g_quit;
 static void on_signal(int s) { (void)s; g_quit = 1; }
@@ -116,8 +139,13 @@ int main(int argc, char **argv) {
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);
 
-    if (!mcc_blocks_load(MCC_SOURCE_DIR "/data/blocks.txt")) return 1;
-    if (!phys_block_colliders_load(MCC_SOURCE_DIR "/data/shapes.txt", MCC_SOURCE_DIR "/data/phys_props.txt")) return 1;
+    find_dirs();
+    char p1[1100], p2[1100], p3[1100];
+    snprintf(p1, sizeof p1, "%s/blocks.txt", g_data);
+    snprintf(p2, sizeof p2, "%s/shapes.txt", g_data);
+    snprintf(p3, sizeof p3, "%s/phys_props.txt", g_data);
+    if (!mcc_blocks_load(p1)) return 1;
+    if (!phys_block_colliders_load(p2, p3)) return 1;
     phys_colliders_finalize();
     STONE = mcc_block_default_state("stone");
     DIRT = mcc_block_default_state("dirt");
@@ -138,7 +166,7 @@ int main(int argc, char **argv) {
     cfg.phys = (phys_scene_config){ { 0, -9.81, 0 }, 0.1 };
     cfg.post_tick_hook = mcc_viewer_post_tick;
     g_lv = mcc_level_create(&cfg);
-    mcc_viewer *v = mcc_viewer_start(g_lv, port, MCC_SOURCE_DIR "/tools/viewer", on_spawn, NULL);
+    mcc_viewer *v = mcc_viewer_start(g_lv, port, g_web, on_spawn, NULL);
     g_lv->cfg.hook_ctx = v;
     mcc_level_start(g_lv);
 
