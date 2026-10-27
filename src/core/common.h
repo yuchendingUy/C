@@ -63,14 +63,14 @@ long mcc_getline(char **line, size_t *cap, FILE *f);
 #define mcc_vec_push(v, x) do { \
         if ((v)->len == (v)->cap) { \
             (v)->cap = (v)->cap ? (v)->cap * 2 : 8; \
-            (v)->data = mcc_xrealloc((v)->data, (v)->cap * sizeof(*(v)->data)); \
+            (v)->data = (__typeof__((v)->data))mcc_xrealloc((v)->data, (v)->cap * sizeof(*(v)->data)); \
         } \
         (v)->data[(v)->len++] = (x); \
     } while (0)
 #define mcc_vec_free(v) do { free((v)->data); (v)->data = NULL; (v)->len = (v)->cap = 0; } while (0)
 #define mcc_vec_reserve(v, n) do { \
         if ((v)->cap < (n)) { (v)->cap = (n); \
-            (v)->data = mcc_xrealloc((v)->data, (v)->cap * sizeof(*(v)->data)); } \
+            (v)->data = (__typeof__((v)->data))mcc_xrealloc((v)->data, (v)->cap * sizeof(*(v)->data)); } \
     } while (0)
 
 #endif

@@ -26,7 +26,7 @@ void *mcc_xrealloc(void *p, size_t n) {
 
 char *mcc_xstrdup(const char *s) {
     size_t n = strlen(s) + 1;
-    char *d = mcc_xmalloc(n);
+    char *d = (char*)mcc_xmalloc(n);
     memcpy(d, s, n);
     return d;
 }
@@ -51,7 +51,7 @@ long mcc_getline(char **line, size_t *cap, FILE *f) {
     while ((c = fgetc(f)) != EOF) {
         if (len + 2 > *cap) {
             *cap = *cap ? *cap * 2 : 256;
-            *line = mcc_xrealloc(*line, *cap);
+            *line = (char*)mcc_xrealloc(*line, *cap);
         }
         (*line)[len++] = (char)c;
         if (c == '\n') break;

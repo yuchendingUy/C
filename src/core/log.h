@@ -11,7 +11,7 @@ void mcc_log_set_level(enum mcc_log_level lvl);
 #define MCC_PRINTF printf
 #endif
 void mcc_log(enum mcc_log_level lvl, const char *fmt, ...) __attribute__((format(MCC_PRINTF, 2, 3)));
-_Noreturn void mcc_log_fatal(const char *fmt, ...) __attribute__((format(MCC_PRINTF, 1, 2)));
+[[noreturn]] void mcc_log_fatal(const char *fmt, ...) __attribute__((format(MCC_PRINTF, 1, 2)));
 
 #define mcc_debug(...) mcc_log(MCC_LOG_DEBUG, __VA_ARGS__)
 #define mcc_info(...)  mcc_log(MCC_LOG_INFO, __VA_ARGS__)

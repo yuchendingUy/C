@@ -86,7 +86,7 @@ static mcc_chunk *make_chunk(const mcc_chunk_store *dims, int32_t cx, int32_t cz
 
 /* ---- 召唤：随机形状的结构 ---- */
 
-static _Thread_local uint64_t t_rng = 0x9E3779B97F4A7C15ULL;
+static thread_local uint64_t t_rng = 0x9E3779B97F4A7C15ULL;
 static uint32_t rnd(uint32_t n) {
     t_rng ^= t_rng << 13; t_rng ^= t_rng >> 7; t_rng ^= t_rng << 17;
     return (uint32_t)(t_rng % n);
@@ -135,7 +135,7 @@ static void on_spawn(void *ctx, double x, double z, int count) {
         double a = rnd(628) / 100.0, b = rnd(628) / 100.0;
         double q[4] = { sin(a / 2) * cos(b), sin(a / 2) * sin(b), 0, cos(a / 2) };
         double pose[7] = { px, py, pz, q[0], q[1], q[2], q[3] };
-        fill_arg *fa = mcc_xmalloc(sizeof *fa);
+        fill_arg *fa = (fill_arg*)mcc_xmalloc(sizeof *fa);
         fa->shape = (int)rnd(5);
         if (mcc_level_spawn_sublevel(g_lv, pose, fill_shape, fa) < 0) free(fa); /* 落点不在已加载区块 */
     }

@@ -3,8 +3,8 @@
 static void alloc_table(mcc_hmap *m, uint32_t cap) {
     uint32_t n = 16;
     while (n < cap) n <<= 1;
-    m->keys = mcc_xmalloc(sizeof(uint64_t) * n);
-    m->vals = mcc_xcalloc(n, sizeof(void *));
+    m->keys = (uint64_t*)mcc_xmalloc(sizeof(uint64_t) * n);
+    m->vals = (void**)mcc_xcalloc(n, sizeof(void *));
     m->mask = n - 1;
     m->count = m->used = 0;
 }

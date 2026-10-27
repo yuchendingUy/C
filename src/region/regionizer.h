@@ -42,11 +42,11 @@ typedef struct {
 
 struct mcc_section {
     int32_t sx, sz;
-    mcc_region *_Atomic region;
+    _Atomic(mcc_region *) region;
     int32_t chunk_count;      /* 本区段已加载的区块数 */
     int32_t buffer_refs;      /* 周围（含自身）活区段数量，为 0 即死区段 */
     uint32_t visit_mark;      /* 拆分时的遍历标记 */
-    _Atomic bool removed;     /* 已从区段表删除 */
+    _Atomic(bool) removed;     /* 已从区段表删除 */
 };
 
 typedef MCC_VEC(mcc_section *) mcc_section_vec;
@@ -55,8 +55,8 @@ typedef MCC_VEC(mcc_chunk_task) mcc_task_vec;
 
 struct mcc_region {
     uint64_t id;
-    _Atomic int state;
-    _Atomic int refs;   /* 区域器持 1 个引用，调度堆中每个条目持 1 个；归零后交给纪元回收 */
+    _Atomic(int) state;
+    _Atomic(int) refs;   /* 区域器持 1 个引用，调度堆中每个条目持 1 个；归零后交给纪元回收 */
     mcc_regionizer *rz;
 
     /* 以下字段仅在持有区域器锁时修改 */
@@ -70,7 +70,7 @@ struct mcc_region {
     mcc_task_vec tasks;
 
     /* 调度器字段 */
-    _Atomic bool in_schedule;
+    _Atomic(bool) in_schedule;
     uint64_t next_tick_start;
     uint64_t tick_count;
     double tick_time_ema_ns;
@@ -106,11 +106,11 @@ struct mcc_regionizer {
     mcc_region_callbacks cb;
     pthread_mutex_t lock;
     mcc_cmap sections;           /* 区段键 → mcc_section* */
-    _Atomic uint64_t next_region_id;
+    _Atomic(uint64_t) next_region_id;
     uint32_t visit_gen;
-    _Atomic size_t region_count;
+    _Atomic(size_t) region_count;
     /* 统计 */
-    _Atomic uint64_t stat_merges, stat_deferred_merges, stat_splits, stat_kills;
+    _Atomic(uint64_t) stat_merges, stat_deferred_merges, stat_splits, stat_kills;
 };
 
 void mcc_regionizer_init(mcc_regionizer *rz, const mcc_regionizer_config *cfg, const mcc_region_callbacks *cb);

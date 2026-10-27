@@ -125,7 +125,7 @@ static void block_world(phys_scene *s, int32_t id, int32_t x, int32_t y, int32_t
 /* L 形：3×1×3 底板 + 一根 1×3×1 柱子立在角上 */
 typedef struct { int32_t bx, by, bz; } l_ctx;
 static mcc_state_t l_shape(int32_t x, int32_t y, int32_t z, void *p) {
-    l_ctx *c = p;
+    l_ctx *c = (l_ctx*)p;
     int32_t lx = x - c->bx, ly = y - c->by, lz = z - c->bz;
     if (lx < 0 || lz < 0 || ly < 0 || lx > 2 || lz > 2 || ly > 3) return 0;
     if (ly == 0) return STONE;

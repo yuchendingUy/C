@@ -21,7 +21,7 @@ void mcc_store_init(mcc_chunk_store *st, int32_t min_y, int32_t height) {
 void mcc_store_free(mcc_chunk_store *st) {
     uint32_t it = 0;
     void *v;
-    while (mcc_hmap_next(&st->chunks, &it, NULL, &v)) mcc_chunk_free(v);
+    while (mcc_hmap_next(&st->chunks, &it, NULL, &v)) mcc_chunk_free((mcc_chunk*)v);
     mcc_hmap_free(&st->chunks);
     st->listeners = NULL;
 }
@@ -45,7 +45,7 @@ void mcc_store_unlisten(mcc_chunk_store *st, mcc_store_listener *l) {
 /* ------------------------------------------------------------------ */
 
 mcc_chunk *mcc_chunk_new(const mcc_chunk_store *st, int32_t cx, int32_t cz) {
-    mcc_chunk *c = mcc_xcalloc(1, sizeof *c + sizeof(mcc_chunk_section *) * (size_t)st->nsec);
+    mcc_chunk *c = (mcc_chunk*)mcc_xcalloc(1, sizeof *c + sizeof(mcc_chunk_section *) * (size_t)st->nsec);
     c->cx = cx;
     c->cz = cz;
     c->min_sy = st->min_sy;
@@ -247,7 +247,7 @@ static void store_phys_rows(mcc_chunk *c, int i, const uint16_t solid[16][16], c
         free(s->phys);
         s->phys = NULL;
     } else {
-        if (!s->phys) s->phys = mcc_xmalloc(sizeof *s->phys);
+        if (!s->phys) s->phys = (mcc_section_phys*)mcc_xmalloc(sizeof *s->phys);
         memcpy(s->phys->solid, solid, sizeof s->phys->solid);
         memcpy(s->phys->liquid, liquid, sizeof s->phys->liquid);
     }
@@ -258,7 +258,7 @@ static void store_phys_rows(mcc_chunk *c, int i, const uint16_t solid[16][16], c
 
 /* 整个区块批量计算位图：各区段只解码一次，上下相邻区段复用；四邻区块只解码贴着的一面 */
 static void compute_chunk(const mcc_chunk_store *st, mcc_chunk *c) {
-    sec_rows *R = mcc_xmalloc(sizeof(sec_rows) * (size_t)c->nsec);
+    sec_rows *R = (sec_rows*)mcc_xmalloc(sizeof(sec_rows) * (size_t)c->nsec);
     for (int i = 0; i < c->nsec; i++)
         if (c->sec[i]) section_rows(c->sec[i], &R[i]);
     const mcc_chunk *w = mcc_store_chunk(st, c->cx - 1, c->cz), *e = mcc_store_chunk(st, c->cx + 1, c->cz);
@@ -284,7 +284,7 @@ static void compute_chunk(const mcc_chunk_store *st, mcc_chunk *c) {
         face(&fe, FACE_X, 0, NULL, E);
         face(&fn, FACE_Z, 15, NULL, N);
         face(&fs, FACE_Z, 0, NULL, S);
-        static const uint16_t zero[16];
+        static const uint16_t zero[16] = { 0 };
         const uint16_t *below = i > 0 && c->sec[i - 1] ? R[i - 1].full[15] : zero;
         const uint16_t *above = i + 1 < c->nsec && c->sec[i + 1] ? R[i + 1].full[0] : zero;
         uint16_t solid[16][16];
@@ -352,7 +352,7 @@ static void refresh_border(const mcc_chunk_store *st, mcc_chunk *c, int dx, int 
         /* 整批写回：只动本层的位，计数按差值更新 */
         if (!s->phys) {
             if (!any) continue;
-            s->phys = mcc_xcalloc(1, sizeof *s->phys);
+            s->phys = (mcc_section_phys*)mcc_xcalloc(1, sizeof *s->phys);
         }
         int32_t delta = 0;
         for (int y = 0; y < 16; y++) {
@@ -412,12 +412,12 @@ mcc_chunk *mcc_store_remove_chunk(mcc_chunk_store *st, int32_t cx, int32_t cz) {
 void mcc_store_move(mcc_chunk_store *from, mcc_chunk_store *to, const uint64_t *keys, size_t n) {
     if (from == to || !n) return;
     if (from->min_sy != to->min_sy || from->nsec != to->nsec) mcc_log_fatal("区块存储高度不同，不能搬迁");
-    mcc_chunk **moved = mcc_xmalloc(sizeof(mcc_chunk *) * n);
+    mcc_chunk **moved = (mcc_chunk**)mcc_xmalloc(sizeof(mcc_chunk *) * n);
     size_t m = 0;
     mcc_hmap moving;
     mcc_hmap_init(&moving, (uint32_t)n * 2);
     for (size_t i = 0; i < n; i++) {
-        mcc_chunk *c = mcc_hmap_get(&from->chunks, keys[i]);
+        mcc_chunk *c = (mcc_chunk*)mcc_hmap_get(&from->chunks, keys[i]);
         if (!c) continue;
         if (mcc_store_chunk(to, c->cx, c->cz)) mcc_log_fatal("区块 (%d,%d) 搬迁目标已存在", c->cx, c->cz);
         for (mcc_store_listener *l = from->listeners; l; l = l->next)
@@ -555,7 +555,7 @@ void mcc_store_stats_get(const mcc_chunk_store *st, mcc_store_stats *out) {
     uint32_t it = 0;
     void *v;
     while (mcc_hmap_next(&st->chunks, &it, NULL, &v)) {
-        const mcc_chunk *c = v;
+        const mcc_chunk *c = (const mcc_chunk*)v;
         out->chunks++;
         out->memory += sizeof *c + sizeof(mcc_chunk_section *) * (size_t)c->nsec;
         for (int i = 0; i < c->nsec; i++) {
@@ -571,7 +571,7 @@ bool mcc_store_verify(const mcc_chunk_store *st, char *err, size_t errlen) {
     uint32_t it = 0;
     void *v;
     while (mcc_hmap_next(&st->chunks, &it, NULL, &v)) {
-        const mcc_chunk *c = v;
+        const mcc_chunk *c = (const mcc_chunk*)v;
         if (c->store != st) { snprintf(err, errlen, "区块 (%d,%d) 存储指针错误", c->cx, c->cz); return false; }
         for (int i = 0; i < c->nsec; i++) {
             const mcc_chunk_section *s = c->sec[i];

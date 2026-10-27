@@ -2,7 +2,7 @@
 #include "../core/log.h"
 
 mcc_chunk_section *mcc_section_new(mcc_state_t fill) {
-    mcc_chunk_section *s = mcc_xcalloc(1, sizeof *s);
+    mcc_chunk_section *s = (mcc_chunk_section*)mcc_xcalloc(1, sizeof *s);
     s->single = fill;
     s->non_air = mcc_state_is_air(fill) ? 0 : MCC_SECTION_BLOCKS;
     s->nonzero = fill ? MCC_SECTION_BLOCKS : 0;
@@ -24,26 +24,26 @@ MCC_INLINE void put4(uint8_t *d, int idx, uint32_t v) {
 
 /* 单值 → 4 位 */
 static void grow_from_single(mcc_chunk_section *s) {
-    s->palette = mcc_xmalloc(16 * sizeof(uint16_t));
+    s->palette = (uint16_t*)mcc_xmalloc(16 * sizeof(uint16_t));
     s->palette[0] = (uint16_t)s->single;
     s->palette_len = 1;
-    s->d8 = mcc_xcalloc(MCC_SECTION_BLOCKS / 2, 1);
+    s->d8 = (uint8_t*)mcc_xcalloc(MCC_SECTION_BLOCKS / 2, 1);
     s->bits = 4;
 }
 
 /* 4 位 → 8 位 */
 static void grow_4_to_8(mcc_chunk_section *s) {
-    uint8_t *nd = mcc_xmalloc(MCC_SECTION_BLOCKS);
+    uint8_t *nd = (uint8_t*)mcc_xmalloc(MCC_SECTION_BLOCKS);
     for (int i = 0; i < MCC_SECTION_BLOCKS; i++) nd[i] = (s->d8[i >> 1] >> ((i & 1) << 2)) & 15;
     free(s->d8);
     s->d8 = nd;
-    s->palette = mcc_xrealloc(s->palette, 256 * sizeof(uint16_t));
+    s->palette = (uint16_t*)mcc_xrealloc(s->palette, 256 * sizeof(uint16_t));
     s->bits = 8;
 }
 
 /* 8 位 → 直接 16 位 */
 static void grow_8_to_16(mcc_chunk_section *s) {
-    uint16_t *nd = mcc_xmalloc(MCC_SECTION_BLOCKS * sizeof(uint16_t));
+    uint16_t *nd = (uint16_t*)mcc_xmalloc(MCC_SECTION_BLOCKS * sizeof(uint16_t));
     for (int i = 0; i < MCC_SECTION_BLOCKS; i++) nd[i] = s->palette[s->d8[i]];
     free(s->d8);
     free(s->palette);
@@ -119,7 +119,7 @@ void mcc_section_flag_rows(const mcc_chunk_section *s, uint16_t solid[16][16], u
 void mcc_section_set_phys(mcc_chunk_section *s, int x, int y, int z, bool solid, bool liquid) {
     if (!s->phys) {
         if (!solid && !liquid) return;
-        s->phys = mcc_xcalloc(1, sizeof *s->phys);
+        s->phys = (mcc_section_phys*)mcc_xcalloc(1, sizeof *s->phys);
     }
     uint16_t m = (uint16_t)(1u << x);
     uint16_t *rs = &s->phys->solid[y][z], *rl = &s->phys->liquid[y][z];

@@ -21,7 +21,7 @@ uint32_t phys_collider_new(float friction, float volume, float restitution, bool
 void phys_collider_add_box(uint32_t id, const float min[3], const float max[3]) {
     if (g_finalized || id == 0 || id > g_colliders.len) mcc_log_fatal("非法碰撞体编号 %u", id);
     phys_collider *c = &g_colliders.data[id - 1];
-    c->boxes = mcc_xrealloc(c->boxes, sizeof(phys_box) * (size_t)(c->nboxes + 1));
+    c->boxes = (phys_box*)mcc_xrealloc(c->boxes, sizeof(phys_box) * (size_t)(c->nboxes + 1));
     phys_box *b = &c->boxes[c->nboxes++];
     for (int i = 0; i < 3; i++) {
         /* 与 Sable 一致：碰撞箱裁剪到单位方块内，避免栅栏/墙越界 */
@@ -42,9 +42,9 @@ void phys_colliders_finalize(void) {
     for (size_t i = 0; i < g_colliders.len; i++) {
         phys_collider *c = &g_colliders.data[i];
         if (!c->nboxes) continue;
-        c->hulls = mcc_xaligned(16, sizeof(b3BoxHull) * (size_t)c->nboxes);
-        c->centers = mcc_xmalloc(sizeof(b3Vec3) * (size_t)c->nboxes);
-        c->halves = mcc_xmalloc(sizeof(b3Vec3) * (size_t)c->nboxes);
+        c->hulls = (b3BoxHull*)mcc_xaligned(16, sizeof(b3BoxHull) * (size_t)c->nboxes);
+        c->centers = (b3Vec3*)mcc_xmalloc(sizeof(b3Vec3) * (size_t)c->nboxes);
+        c->halves = (b3Vec3*)mcc_xmalloc(sizeof(b3Vec3) * (size_t)c->nboxes);
         for (int b = 0; b < c->nboxes; b++) {
             const phys_box *bx = &c->boxes[b];
             b3Vec3 h = { (bx->max[0] - bx->min[0]) * 0.5f, (bx->max[1] - bx->min[1]) * 0.5f, (bx->max[2] - bx->min[2]) * 0.5f };

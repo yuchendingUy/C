@@ -42,8 +42,8 @@ static void bench(int n, int ticks) {
     test_fill(&world, terrain, &t, -13, 12, -13, 12, 32, 79);
     phys_scene_config cfg = { { 0, -9.81, 0 }, 0.1 };
     phys_scene *s = phys_scene_create(&cfg, &world);
-    cube_ctx *cubes = mcc_xmalloc(sizeof(cube_ctx) * (size_t)n);
-    mcc_chunk_store *plots = mcc_xmalloc(sizeof(mcc_chunk_store) * (size_t)n);
+    cube_ctx *cubes = (cube_ctx*)mcc_xmalloc(sizeof(cube_ctx) * (size_t)n);
+    mcc_chunk_store *plots = (mcc_chunk_store*)mcc_xmalloc(sizeof(mcc_chunk_store) * (size_t)n);
     int side = (int)ceil(sqrt((double)n / 3.0));
     for (int i = 0; i < n; i++) {
         cubes[i] = (cube_ctx){ 20000000 + (i % 1000) * 16, 64, 20000000 + (i / 1000) * 16 };
@@ -52,7 +52,7 @@ static void bench(int n, int ticks) {
         double z = (k / side) * 5.0 - side * 2.5 + (layer % 2) * 0.9;
         spawn_cube(s, i + 1, &plots[i], &cubes[i], x, 66.0 + layer * 4.0, z, 27.0);
     }
-    double *ms = mcc_xmalloc(sizeof(double) * (size_t)ticks);
+    double *ms = (double*)mcc_xmalloc(sizeof(double) * (size_t)ticks);
     for (int k = 0; k < ticks; k++) {
         uint64_t t0 = mcc_nanotime();
         phys_scene_tick(s);
@@ -76,7 +76,7 @@ static void bench(int n, int ticks) {
     for (int i = 0; i < n; i++) if (speed(s, i + 1) < 0.05) still++;
     phys_stats st;
     phys_scene_stats(s, &st);
-    extern _Atomic uint64_t g_prof[8];
+    extern _Atomic(uint64_t) g_prof[8];
     mcc_info("  接触生成细分：找方块对 %.1fms，碰撞箱求接触 %.1fms，合并输出 %.1fms，原始接触点 %llu",
              g_prof[0] / 1e6, g_prof[1] / 1e6, g_prof[2] / 1e6, (unsigned long long)g_prof[3]);
     mcc_info("  耗时构成：物理步进合计 %.1fms，其中接触生成（各线程合计）%.1fms；浮力等每刻工作 %.1fms；方块对 %llu",

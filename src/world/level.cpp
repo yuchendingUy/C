@@ -12,9 +12,9 @@
 /* ------------------------------------------------------------------ */
 
 static mcc_region_world *rw_new(mcc_level *lv) {
-    mcc_region_world *w = mcc_xcalloc(1, sizeof *w);
+    mcc_region_world *w = (mcc_region_world*)mcc_xcalloc(1, sizeof *w);
     w->level = lv;
-    w->chunks = mcc_xmalloc(sizeof *w->chunks);
+    w->chunks = (mcc_chunk_store*)mcc_xmalloc(sizeof *w->chunks);
     mcc_store_init(w->chunks, lv->cfg.min_y, lv->cfg.height);
     mcc_hmap_init(&w->sublevels, 8);
     return w;
@@ -40,17 +40,17 @@ static void maybe_drop_phys(mcc_region_world *w) {
 
 static void *cb_create(void *ctx, mcc_region *r) {
     (void)r;
-    return rw_new(ctx);
+    return rw_new((mcc_level*)ctx);
 }
 
 static void cb_destroy(void *ctx, mcc_region *r) {
-    mcc_level *lv = ctx;
-    mcc_region_world *w = r->data;
+    mcc_level *lv = (mcc_level*)ctx;
+    mcc_region_world *w = (mcc_region_world*)r->data;
     if (!w) return;
     uint32_t it = 0;
     void *v;
     while (mcc_hmap_next(&w->sublevels, &it, NULL, &v)) {
-        mcc_sublevel *sl = v;
+        mcc_sublevel *sl = (mcc_sublevel*)v;
         if (w->phys) phys_sublevel_remove(w->phys, sl->id);
         if (lv->cfg.sublevel_orphan) lv->cfg.sublevel_orphan(lv->cfg.hook_ctx, sl);
         else sublevel_free(sl);
@@ -63,7 +63,7 @@ static void cb_destroy(void *ctx, mcc_region *r) {
 }
 
 static void cb_active(void *ctx, mcc_region *r) {
-    mcc_level *lv = ctx;
+    mcc_level *lv = (mcc_level*)ctx;
     mcc_tick_scheduler_on_active(lv->sched, r);
 }
 
@@ -78,11 +78,11 @@ static void move_sublevel(mcc_level *lv, mcc_region_world *from, mcc_region_worl
 
 /* 取出区域里全部子世界（遍历时不能改表） */
 static size_t list_sublevels(mcc_region_world *w, mcc_sublevel ***out) {
-    mcc_sublevel **v = mcc_xmalloc(sizeof *v * (w->sublevels.count + 1));
+    mcc_sublevel **v = (mcc_sublevel**)mcc_xmalloc(sizeof *v * (w->sublevels.count + 1));
     size_t n = 0;
     uint32_t it = 0;
     void *p;
-    while (mcc_hmap_next(&w->sublevels, &it, NULL, &p)) v[n++] = p;
+    while (mcc_hmap_next(&w->sublevels, &it, NULL, &p)) v[n++] = (mcc_sublevel*)p;
     *out = v;
     return n;
 }
@@ -90,7 +90,7 @@ static size_t list_sublevels(mcc_region_world *w, mcc_sublevel ***out) {
 static void move_all_chunks(mcc_level *lv, mcc_chunk_store *from, mcc_chunk_store *to) {
     size_t n = from->chunks.count;
     if (!n) return;
-    uint64_t *keys = mcc_xmalloc(sizeof *keys * n);
+    uint64_t *keys = (uint64_t*)mcc_xmalloc(sizeof *keys * n);
     size_t k = 0;
     uint32_t it = 0;
     uint64_t key;
@@ -102,8 +102,8 @@ static void move_all_chunks(mcc_level *lv, mcc_chunk_store *from, mcc_chunk_stor
 
 /* 合并：from 的一切并入 into。先交换使搬运量最小（区块指针、刚体重建都按数量计） */
 static void cb_merge(void *ctx, mcc_region *from, mcc_region *into) {
-    mcc_level *lv = ctx;
-    mcc_region_world *f = from->data, *t = into->data;
+    mcc_level *lv = (mcc_level*)ctx;
+    mcc_region_world *f = (mcc_region_world*)from->data, *t = (mcc_region_world*)into->data;
     size_t fs = f->chunks->chunks.count + f->sublevels.count * 64, ts = t->chunks->chunks.count + t->sublevels.count * 64;
     if (fs > ts) {
         /* 存储和场景成对交换：场景读的就是同一对里的存储 */
@@ -122,9 +122,9 @@ static void cb_merge(void *ctx, mcc_region *from, mcc_region *into) {
 
 /* 拆分：区块按所在区段的新归属分配；子世界按刚体当前位置所在区块的归属分配 */
 static void cb_split(void *ctx, mcc_region *from, mcc_region **into, size_t n) {
-    mcc_level *lv = ctx;
-    mcc_region_world *f = from->data;
-    MCC_VEC(uint64_t) *lists = mcc_xcalloc(n, sizeof *lists);
+    mcc_level *lv = (mcc_level*)ctx;
+    mcc_region_world *f = (mcc_region_world*)from->data;
+    MCC_VEC(uint64_t) *lists = (__typeof__(lists))mcc_xcalloc(n, sizeof *lists);
     uint32_t it = 0;
     uint64_t key;
     while (mcc_hmap_next(&f->chunks->chunks, &it, &key, NULL)) {
@@ -134,7 +134,7 @@ static void cb_split(void *ctx, mcc_region *from, mcc_region **into, size_t n) {
             if (into[i] == dst) { mcc_vec_push(&lists[i], key); break; }
     }
     for (size_t i = 0; i < n; i++) {
-        mcc_region_world *t = into[i]->data;
+        mcc_region_world *t = (mcc_region_world*)into[i]->data;
         mcc_store_move(f->chunks, t->chunks, lists[i].data, lists[i].len);
         atomic_fetch_add_explicit(&lv->stat_chunk_moves, lists[i].len, memory_order_relaxed);
         mcc_vec_free(&lists[i]);
@@ -151,7 +151,7 @@ static void cb_split(void *ctx, mcc_region *from, mcc_region **into, size_t n) {
         mcc_region *dst = mcc_regionizer_region_of_chunk_locked(&lv->rz, cx, cz);
         if (!dst || dst == from) continue;
         for (size_t k = 0; k < n; k++)
-            if (into[k] == dst) { move_sublevel(lv, f, dst->data, sls[i]); break; }
+            if (into[k] == dst) { move_sublevel(lv, f, (mcc_region_world*)dst->data, sls[i]); break; }
     }
     free(sls);
     maybe_drop_phys(f);
@@ -164,8 +164,8 @@ static void cb_split(void *ctx, mcc_region *from, mcc_region **into, size_t n) {
 
 static void level_tick(void *ctx, mcc_region *r, uint64_t start) {
     (void)start;
-    mcc_level *lv = ctx;
-    mcc_region_world *w = r->data;
+    mcc_level *lv = (mcc_level*)ctx;
+    mcc_region_world *w = (mcc_region_world*)r->data;
     mcc_region_run_tasks(r);
     if (lv->cfg.tick_hook) lv->cfg.tick_hook(lv->cfg.hook_ctx, r, w);
     if (w->phys) {
@@ -182,7 +182,7 @@ static void level_tick(void *ctx, mcc_region *r, uint64_t start) {
 /* ------------------------------------------------------------------ */
 
 mcc_level *mcc_level_create(const mcc_level_config *cfg) {
-    mcc_level *lv = mcc_xcalloc(1, sizeof *lv);
+    mcc_level *lv = (mcc_level*)mcc_xcalloc(1, sizeof *lv);
     lv->cfg = *cfg;
     if (lv->cfg.phys_substeps < 1) lv->cfg.phys_substeps = 2;
     if (lv->cfg.tick_threads < 1) lv->cfg.tick_threads = 1;
@@ -207,9 +207,9 @@ void mcc_level_destroy(mcc_level *lv) {
 /* ---- 区块 ---- */
 
 static void task_load(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
-    mcc_chunk *c = arg;
+    mcc_chunk *c = (mcc_chunk*)arg;
     if (!r) { mcc_chunk_free(c); return; } /* 关服取消 */
-    mcc_region_world *w = r->data;
+    mcc_region_world *w = (mcc_region_world*)r->data;
     if (mcc_store_chunk(w->chunks, cx, cz)) {
         mcc_warn("区块 (%d,%d) 重复加载，丢弃新的", cx, cz);
         mcc_chunk_free(c);
@@ -226,9 +226,9 @@ void mcc_level_load_chunk(mcc_level *lv, mcc_chunk *c) {
 }
 
 static void task_unload(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
-    mcc_level *lv = arg;
+    mcc_level *lv = (mcc_level*)arg;
     if (!r) return; /* 关服取消：区域器正在销毁 */
-    mcc_region_world *w = r->data;
+    mcc_region_world *w = (mcc_region_world*)r->data;
     mcc_chunk_free(mcc_store_remove_chunk(w->chunks, cx, cz));
     mcc_regionizer_remove_chunk(&lv->rz, cx, cz);
 }
@@ -250,10 +250,10 @@ typedef struct {
 static void task_spawn(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
     (void)cx;
     (void)cz;
-    spawn_req *q = arg;
+    spawn_req *q = (spawn_req*)arg;
     if (!r) { free(q); return; }
-    mcc_region_world *w = r->data;
-    mcc_sublevel *sl = mcc_xcalloc(1, sizeof *sl);
+    mcc_region_world *w = (mcc_region_world*)r->data;
+    mcc_sublevel *sl = (mcc_sublevel*)mcc_xcalloc(1, sizeof *sl);
     sl->id = q->id;
     sl->plot_cx = PLOT_BASE_CHUNK + (q->id % PLOT_ROW) * PLOT_CHUNKS;
     sl->plot_cz = PLOT_BASE_CHUNK + (q->id / PLOT_ROW) * PLOT_CHUNKS;
@@ -267,7 +267,7 @@ static void task_spawn(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
 }
 
 int32_t mcc_level_spawn_sublevel(mcc_level *lv, const double pose[7], mcc_sublevel_fill_fn fill, void *arg) {
-    spawn_req *q = mcc_xmalloc(sizeof *q);
+    spawn_req *q = (spawn_req*)mcc_xmalloc(sizeof *q);
     q->lv = lv;
     q->id = atomic_fetch_add(&lv->next_sublevel_id, 1);
     memcpy(q->pose, pose, sizeof q->pose);
@@ -283,11 +283,11 @@ int32_t mcc_level_spawn_sublevel(mcc_level *lv, const double pose[7], mcc_sublev
 }
 
 mcc_sublevel *mcc_region_world_sublevel(mcc_region_world *w, int32_t id) {
-    return mcc_hmap_get(&w->sublevels, (uint64_t)(uint32_t)id);
+    return (mcc_sublevel*)mcc_hmap_get(&w->sublevels, (uint64_t)(uint32_t)id);
 }
 
 void mcc_region_world_remove_sublevel(mcc_region_world *w, int32_t id) {
-    mcc_sublevel *sl = mcc_hmap_remove(&w->sublevels, (uint64_t)(uint32_t)id);
+    mcc_sublevel *sl = (mcc_sublevel*)mcc_hmap_remove(&w->sublevels, (uint64_t)(uint32_t)id);
     if (!sl) return;
     if (w->phys) phys_sublevel_remove(w->phys, id);
     sublevel_free(sl);

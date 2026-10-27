@@ -4,7 +4,7 @@
 static mcc_cmap_table *table_new(size_t cap) {
     size_t n = 16;
     while (n < cap) n <<= 1;
-    mcc_cmap_table *t = mcc_xaligned(MCC_CACHELINE, sizeof(mcc_cmap_table) + n * sizeof(mcc_cmap_entry));
+    mcc_cmap_table *t = (mcc_cmap_table*)mcc_xaligned(MCC_CACHELINE, sizeof(mcc_cmap_table) + n * sizeof(mcc_cmap_entry));
     t->mask = n - 1;
     t->used = 0;
     t->live = 0;

@@ -145,7 +145,7 @@ void phys_set_stats_enabled(bool on);
 /* 整格大板碰撞（默认开），关掉则全部逐方块逐碰撞箱，用于对比 */
 void phys_set_canonical(bool on);
 
-/* 体素接触生成回调（collide.c） */
+/* 体素接触生成回调（collide.cpp） */
 const b3VoxelManifold *phys_voxel_manifolds(const b3VoxelQuery *q, int *count, void *ctx);
 
 #endif

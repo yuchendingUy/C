@@ -15,9 +15,9 @@ static MCC_VEC(mcc_region *) g_ticking;   /* 正在"推进"的区域 */
 static mcc_cmap g_loaded;                 /* 区块 → 1 */
 static bool g_fail;
 
-static void *cb_create(void *ctx, mcc_region *r) { (void)ctx; (void)r; rdata *d = mcc_xcalloc(1, sizeof *d); mcc_cmap_init(&d->chunks, 16); return d; }
+static void *cb_create(void *ctx, mcc_region *r) { (void)ctx; (void)r; rdata *d = (rdata*)mcc_xcalloc(1, sizeof *d); mcc_cmap_init(&d->chunks, 16); return d; }
 static void cb_destroy(void *ctx, mcc_region *r) {
-    (void)ctx; rdata *d = r->data;
+    (void)ctx; rdata *d = (rdata*)r->data;
     if (mcc_cmap_size(&d->chunks)) { mcc_error("区域 %llu 销毁时仍有区块", (unsigned long long)r->id); g_fail = true; }
     mcc_cmap_destroy(&d->chunks); free(d);
 }
@@ -28,11 +28,11 @@ static void cb_active(void *ctx, mcc_region *r) {
     mcc_vec_push(&g_active, r);
 }
 static void cb_merge(void *ctx, mcc_region *from, mcc_region *into) {
-    (void)ctx; rdata *f = from->data, *t = into->data;
+    (void)ctx; rdata *f = (rdata*)from->data, *t = (rdata*)into->data;
     MCC_CMAP_FOREACH(&f->chunks, k, v, { mcc_cmap_put(&t->chunks, k, v); mcc_cmap_put(&f->chunks, k, NULL); });
 }
 static void cb_split(void *ctx, mcc_region *from, mcc_region **into, size_t n) {
-    (void)ctx; (void)into; (void)n; rdata *f = from->data;
+    (void)ctx; (void)into; (void)n; rdata *f = (rdata*)from->data;
     MCC_CMAP_FOREACH(&f->chunks, k, v, {
         mcc_region *o = mcc_regionizer_region_of_chunk_locked(&g_rz, mcc_key2_x(k), mcc_key2_z(k));
         if (o && o != from) { mcc_cmap_put(&((rdata *)o->data)->chunks, k, v); mcc_cmap_put(&f->chunks, k, NULL); }
@@ -48,7 +48,7 @@ static void check_all(int step) {
         mcc_region *o = mcc_regionizer_region_of_chunk(&g_rz, mcc_key2_x(k), mcc_key2_z(k));
         if (!o) { mcc_error("第 %d 步：已加载区块 (%d,%d) 无区域", step, mcc_key2_x(k), mcc_key2_z(k)); g_fail = true; return; }
         /* 区块数据必须在区段所属区域，或者在其延迟合并链上 */
-        rdata *d = o->data;
+        rdata *d = (rdata*)o->data;
         if (!mcc_cmap_get(&d->chunks, k)) {
             mcc_error("第 %d 步：区块 (%d,%d) 的数据不在其所属区域 %llu（状态 %d）", step,
                       mcc_key2_x(k), mcc_key2_z(k), (unsigned long long)o->id, atomic_load(&o->state));
@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
             uint64_t k = loaded_list.data[idx];
             loaded_list.data[idx] = loaded_list.data[--loaded_list.len];
             mcc_region *o = mcc_regionizer_region_of_chunk(&g_rz, mcc_key2_x(k), mcc_key2_z(k));
-            rdata *d = o->data;
+            rdata *d = (rdata*)o->data;
             if (!mcc_cmap_get(&d->chunks, k)) { mcc_error("第 %d 步卸载：数据不在所属区域", step); g_fail = true; break; }
             mcc_cmap_put(&d->chunks, k, NULL);
             mcc_cmap_put(&g_loaded, k, NULL);

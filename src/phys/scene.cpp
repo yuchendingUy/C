@@ -25,7 +25,7 @@ struct phys_scene {
     MCC_VEC(b3BodyId) wake;              /* 方块变化时收集待唤醒的刚体 */
     b3ContactData *contact_buf;
     int contact_cap;
-    _Atomic uint64_t stat_manifolds, stat_pairs, stat_collide_ns;
+    _Atomic(uint64_t) stat_manifolds, stat_pairs, stat_collide_ns;
     uint64_t stat_step_ns, stat_tick_ns;
 };
 
@@ -40,7 +40,7 @@ typedef struct {
 } b3_job;
 
 static void b3_job_run(void *p) {
-    b3_job *j = p;
+    b3_job *j = (b3_job*)p;
     j->fn(j->ctx);
 }
 
@@ -51,7 +51,7 @@ static void *enqueue_task(b3TaskCallback *task, void *task_ctx, void *user_ctx, 
         task(task_ctx);
         return NULL;
     }
-    b3_job *j = mcc_xmalloc(sizeof *j);
+    b3_job *j = (b3_job*)mcc_xmalloc(sizeof *j);
     j->fn = task;
     j->ctx = task_ctx;
     mcc_job_group_init(&j->group);
@@ -61,7 +61,7 @@ static void *enqueue_task(b3TaskCallback *task, void *task_ctx, void *user_ctx, 
 
 static void finish_task(void *user_task, void *user_ctx) {
     (void)user_ctx;
-    b3_job *j = user_task;
+    b3_job *j = (b3_job*)user_task;
     mcc_jobs_wait(&j->group);  /* 等待期间本线程帮忙执行其他任务 */
     free(j);
 }
@@ -80,13 +80,13 @@ static b3WorldTransform pose_to_xf(const double pose[7]) {
 }
 
 phys_body *phys_body_get(phys_scene *s, int32_t id) {
-    return mcc_hmap_get(&s->bodies, (uint64_t)(uint32_t)id);
+    return (phys_body*)mcc_hmap_get(&s->bodies, (uint64_t)(uint32_t)id);
 }
 
 bool phys_scene_next_body(phys_scene *s, uint32_t *it, phys_body **out) {
     void *v;
     if (!mcc_hmap_next(&s->bodies, it, NULL, &v)) return false;
-    *out = v;
+    *out = (phys_body*)v;
     return true;
 }
 
@@ -106,7 +106,7 @@ static void cell_release(phys_scene *s, int32_t cx, int32_t cz);
 /* ------------------------------------------------------------------ */
 
 static bool collect_body(b3ShapeId shape, void *ctx) {
-    phys_scene *s = ctx;
+    phys_scene *s = (phys_scene*)ctx;
     void *u = b3Shape_GetUserData(shape);
     if (u && *(int *)u == PHYS_KIND_BODY) mcc_vec_push(&s->wake, ((phys_body *)u)->body);
     return true;
@@ -130,7 +130,7 @@ static void touch_bodies_in(phys_scene *s, double lx, double ly, double lz, doub
 static void terrain_block_changed(void *ctx, int32_t x, int32_t y, int32_t z, mcc_state_t old, mcc_state_t now) {
     (void)old;
     (void)now;
-    touch_bodies_in(ctx, x, y, z, x + 1.0, y + 1.0, z + 1.0);
+    touch_bodies_in((phys_scene*)ctx, x, y, z, x + 1.0, y + 1.0, z + 1.0);
 }
 
 static void touch_chunk_column(phys_scene *s, const mcc_chunk *c) {
@@ -139,18 +139,18 @@ static void touch_chunk_column(phys_scene *s, const mcc_chunk *c) {
 }
 
 static void terrain_chunk_added(void *ctx, mcc_chunk *c) {
-    cell_acquire(ctx, c->cx, c->cz);
-    touch_chunk_column(ctx, c);
+    cell_acquire((phys_scene*)ctx, c->cx, c->cz);
+    touch_chunk_column((phys_scene*)ctx, c);
 }
 
 static void terrain_chunk_removed(void *ctx, mcc_chunk *c) {
-    touch_chunk_column(ctx, c);
-    cell_release(ctx, c->cx, c->cz);
+    touch_chunk_column((phys_scene*)ctx, c);
+    cell_release((phys_scene*)ctx, c->cx, c->cz);
 }
 
 /* 子世界方块变化：结构变了，静止的刚体该重新动起来；质量追踪同步更新 */
 static void body_block_changed(void *ctx, int32_t x, int32_t y, int32_t z, mcc_state_t old, mcc_state_t now) {
-    phys_body *b = ctx;
+    phys_body *b = (phys_body*)ctx;
     if (b->mass) {
         phys_mass_add(b->mass, x, y, z, old, -1);
         phys_mass_add(b->mass, x, y, z, now, +1);
@@ -159,13 +159,13 @@ static void body_block_changed(void *ctx, int32_t x, int32_t y, int32_t z, mcc_s
 }
 
 static void body_chunk_added(void *ctx, mcc_chunk *c) {
-    phys_body *b = ctx;
+    phys_body *b = (phys_body*)ctx;
     if (b->mass) phys_mass_add_chunk(b->mass, c, +1);
     touch_body(b->body);
 }
 
 static void body_chunk_removed(void *ctx, mcc_chunk *c) {
-    phys_body *b = ctx;
+    phys_body *b = (phys_body*)ctx;
     if (b->mass) phys_mass_add_chunk(b->mass, c, -1);
     touch_body(b->body);
 }
@@ -175,7 +175,7 @@ static void body_chunk_removed(void *ctx, mcc_chunk *c) {
 /* ------------------------------------------------------------------ */
 
 phys_scene *phys_scene_create(const phys_scene_config *cfg, mcc_chunk_store *terrain) {
-    phys_scene *s = mcc_xcalloc(1, sizeof *s);
+    phys_scene *s = (phys_scene*)mcc_xcalloc(1, sizeof *s);
     s->cfg = *cfg;
     /* Sable 默认：接触固有频率 30Hz、阻尼比 5；关节 550Hz、阻尼比 4 */
     s->tuning = (phys_tuning){ 30.0f, 5.0f, 4, 550.0f, 4.0f };
@@ -238,7 +238,7 @@ void phys_scene_destroy(phys_scene *s) {
     pthread_mutex_unlock(&g_world_lock);
     uint32_t it = 0;
     void *v;
-    while (mcc_hmap_next(&s->bodies, &it, NULL, &v)) body_free(v);
+    while (mcc_hmap_next(&s->bodies, &it, NULL, &v)) body_free((phys_body*)v);
     it = 0;
     while (mcc_hmap_next(&s->cells, &it, NULL, &v)) free(v);
     mcc_hmap_free(&s->bodies);
@@ -287,7 +287,7 @@ bool phys_sublevel_create(phys_scene *s, int32_t id, const double pose[7], mcc_c
         mcc_error("物理场景：刚体 %d 已存在", id);
         return false;
     }
-    phys_body *b = mcc_xcalloc(1, sizeof *b);
+    phys_body *b = (phys_body*)mcc_xcalloc(1, sizeof *b);
     b->kind = PHYS_KIND_BODY;
     b->scene = s;
     b->id = id;
@@ -379,16 +379,16 @@ static void apply_mass(phys_body *b) {
 void phys_body_track_mass(phys_scene *s, int32_t id) {
     phys_body *b = body_req(s, id, "开启质量追踪");
     if (b->mass || !b->blocks) return;
-    b->mass = mcc_xmalloc(sizeof *b->mass);
+    b->mass = (phys_mass_tracker*)mcc_xmalloc(sizeof *b->mass);
     phys_mass_init(b->mass);
     uint32_t it = 0;
     void *v;
-    while (mcc_hmap_next(&b->blocks->chunks, &it, NULL, &v)) phys_mass_add_chunk(b->mass, v, +1);
+    while (mcc_hmap_next(&b->blocks->chunks, &it, NULL, &v)) phys_mass_add_chunk(b->mass, (const mcc_chunk*)v, +1);
     apply_mass(b);
 }
 
 void phys_sublevel_remove(phys_scene *s, int32_t id) {
-    phys_body *b = mcc_hmap_remove(&s->bodies, (uint64_t)(uint32_t)id);
+    phys_body *b = (phys_body*)mcc_hmap_remove(&s->bodies, (uint64_t)(uint32_t)id);
     if (!b) return;
     b3DestroyBody(b->body);
     body_free(b);
@@ -500,9 +500,9 @@ static void cell_update_bounds(phys_scene *s, phys_cell *c) {
 static void cell_acquire(phys_scene *s, int32_t chx, int32_t chz) {
     int32_t cx = floor_div(chx, PHYS_CELL_SHIFT - 4), cz = floor_div(chz, PHYS_CELL_SHIFT - 4);
     uint64_t key = mcc_key2(cx, cz);
-    phys_cell *c = mcc_hmap_get(&s->cells, key);
+    phys_cell *c = (phys_cell*)mcc_hmap_get(&s->cells, key);
     if (!c) {
-        c = mcc_xcalloc(1, sizeof *c);
+        c = (phys_cell*)mcc_xcalloc(1, sizeof *c);
         c->kind = PHYS_KIND_CELL;
         c->scene = s;
         c->cx = cx;
@@ -530,7 +530,7 @@ static void cell_acquire(phys_scene *s, int32_t chx, int32_t chz) {
 static void cell_release(phys_scene *s, int32_t chx, int32_t chz) {
     int32_t cx = floor_div(chx, PHYS_CELL_SHIFT - 4), cz = floor_div(chz, PHYS_CELL_SHIFT - 4);
     uint64_t key = mcc_key2(cx, cz);
-    phys_cell *c = mcc_hmap_get(&s->cells, key);
+    phys_cell *c = (phys_cell*)mcc_hmap_get(&s->cells, key);
     if (!c) return;
     if (--c->chunks <= 0) {
         mcc_hmap_remove(&s->cells, key);
@@ -543,7 +543,7 @@ static void cell_release(phys_scene *s, int32_t chx, int32_t chz) {
 /* 推进                                                                */
 /* ------------------------------------------------------------------ */
 
-void phys_buoyancy_compute(phys_scene *s); /* buoyancy.c */
+void phys_buoyancy_compute(phys_scene *s); /* buoyancy.cpp */
 
 void phys_scene_tick(phys_scene *s) {
     uint64_t t0 = mcc_nanotime();
@@ -552,7 +552,7 @@ void phys_scene_tick(phys_scene *s) {
     phys_body *b;
     while (phys_scene_next_body(s, &it, &b))
         if (b->mass && b->mass->dirty) apply_mass(b);
-    /* 关节帧更新（joints.c）与绳索在后续移植中接入 */
+    /* 关节帧更新（joints.cpp）与绳索在后续移植中接入 */
     phys_buoyancy_compute(s);
     s->stat_tick_ns += mcc_nanotime() - t0;
 }
@@ -561,12 +561,12 @@ static void gather_collisions(phys_scene *s, double dt) {
     uint32_t it = 0;
     void *v;
     while (s->collisions.len < MAX_REPORTED_COLLISIONS && mcc_hmap_next(&s->bodies, &it, NULL, &v)) {
-        phys_body *b = v;
+        phys_body *b = (phys_body*)v;
         if (!b3Body_IsAwake(b->body)) continue;
         int cap = b3Body_GetContactCapacity(b->body);
         if (cap > s->contact_cap) {
             s->contact_cap = cap * 2;
-            s->contact_buf = mcc_xrealloc(s->contact_buf, sizeof(b3ContactData) * (size_t)s->contact_cap);
+            s->contact_buf = (b3ContactData*)mcc_xrealloc(s->contact_buf, sizeof(b3ContactData) * (size_t)s->contact_cap);
         }
         int n = b3Body_GetContactData(b->body, s->contact_buf, s->contact_cap);
         for (int c = 0; c < n && s->collisions.len < MAX_REPORTED_COLLISIONS; c++) {
@@ -613,7 +613,7 @@ void phys_scene_step(phys_scene *s, double dt) {
     uint32_t it = 0;
     void *v;
     while (mcc_hmap_next(&s->bodies, &it, NULL, &v)) {
-        phys_body *b = v;
+        phys_body *b = (phys_body*)v;
         if (!b->has_tick_force) continue;
         b3WorldTransform xf = b3Body_GetTransform(b->body);
         b3Body_ApplyForce(b->body, b->tick_force, xf.p, false);
@@ -643,7 +643,7 @@ void phys_scene_stats(phys_scene *s, phys_stats *out) {
     out->tick_ns = s->stat_tick_ns;
 }
 
-/* 给 collide.c 用的统计入口 */
+/* 给 collide.cpp 用的统计入口 */
 void phys_scene_count_time(phys_scene *s, uint64_t ns) {
     atomic_fetch_add_explicit(&s->stat_collide_ns, ns, memory_order_relaxed);
 }

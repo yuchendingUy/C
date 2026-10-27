@@ -12,8 +12,8 @@
 #define MCC_CMAP_EMPTY_KEY 0x8000000080000000ULL
 
 typedef struct mcc_cmap_entry {
-    _Atomic uint64_t key;
-    void *_Atomic val;
+    _Atomic(uint64_t) key;
+    _Atomic(void *) val;
 } mcc_cmap_entry;
 
 typedef struct mcc_cmap_table {
@@ -24,7 +24,7 @@ typedef struct mcc_cmap_table {
 } mcc_cmap_table;
 
 typedef struct mcc_cmap {
-    mcc_cmap_table *_Atomic table;
+    _Atomic(mcc_cmap_table *) table;
 } mcc_cmap;
 
 void mcc_cmap_init(mcc_cmap *m, size_t initial_cap);

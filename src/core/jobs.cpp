@@ -22,14 +22,14 @@ typedef struct {
 static void dq_init(deque *d) {
     pthread_spin_init(&d->lock, PTHREAD_PROCESS_PRIVATE);
     d->cap = 256;
-    d->buf = mcc_xmalloc(d->cap * sizeof(job));
+    d->buf = (job*)mcc_xmalloc(d->cap * sizeof(job));
     d->head = d->count = 0;
 }
 
 static void dq_push(deque *d, job j) {
     pthread_spin_lock(&d->lock);
     if (d->count == d->cap) {
-        job *nb = mcc_xmalloc(d->cap * 2 * sizeof(job));
+        job *nb = (job*)mcc_xmalloc(d->cap * 2 * sizeof(job));
         for (size_t i = 0; i < d->count; i++) nb[i] = d->buf[(d->head + i) % d->cap];
         free(d->buf);
         d->buf = nb;
@@ -66,13 +66,13 @@ static int g_nthreads;
 static deque *g_deques;      /* 每个工作线程一个 */
 static deque g_global;       /* 外部线程提交的任务 */
 static pthread_t *g_threads;
-static _Atomic bool g_stop;
-static _Atomic int64_t g_queued;
+static _Atomic(bool) g_stop;
+static _Atomic(int64_t) g_queued;
 static pthread_mutex_t g_sleep_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_sleep_cond = PTHREAD_COND_INITIALIZER;
-static _Atomic int g_sleepers;
-static _Thread_local int t_worker = -1;
-static _Thread_local uint64_t t_rng = 0x9E3779B97F4A7C15ULL;
+static _Atomic(int) g_sleepers;
+static thread_local int t_worker = -1;
+static thread_local uint64_t t_rng = 0x9E3779B97F4A7C15ULL;
 
 static uint64_t rng_next(void) {
     t_rng ^= t_rng << 13; t_rng ^= t_rng >> 7; t_rng ^= t_rng << 17;
@@ -125,11 +125,11 @@ static void *worker_main(void *p) {
 void mcc_jobs_start(int nthreads) {
     if (nthreads < 1) nthreads = 1;
     g_nthreads = nthreads;
-    g_deques = mcc_xaligned(MCC_CACHELINE, sizeof(deque) * (size_t)nthreads);
+    g_deques = (deque*)mcc_xaligned(MCC_CACHELINE, sizeof(deque) * (size_t)nthreads);
     for (int i = 0; i < nthreads; i++) dq_init(&g_deques[i]);
     dq_init(&g_global);
     atomic_store(&g_stop, false);
-    g_threads = mcc_xmalloc(sizeof(pthread_t) * (size_t)nthreads);
+    g_threads = (pthread_t*)mcc_xmalloc(sizeof(pthread_t) * (size_t)nthreads);
     for (int i = 0; i < nthreads; i++) {
         pthread_create(&g_threads[i], NULL, worker_main, (void *)(intptr_t)i);
         char name[32];
@@ -184,7 +184,7 @@ typedef struct {
 } range_job;
 
 static void range_trampoline(void *p) {
-    range_job *r = p;
+    range_job *r = (range_job*)p;
     r->fn(r->arg, r->begin, r->end);
 }
 
@@ -194,7 +194,7 @@ void mcc_jobs_parallel_for(size_t n, size_t grain, mcc_range_fn fn, void *arg) {
     size_t chunks = (n + grain - 1) / grain;
     if (chunks == 1 || g_nthreads == 0) { fn(arg, 0, n); return; }
     range_job stack_jobs[64];
-    range_job *jobs = chunks <= 64 ? stack_jobs : mcc_xmalloc(chunks * sizeof(range_job));
+    range_job *jobs = chunks <= 64 ? stack_jobs : (range_job *)mcc_xmalloc(chunks * sizeof(range_job));
     mcc_job_group g;
     mcc_job_group_init(&g);
     for (size_t c = 1; c < chunks; c++) {

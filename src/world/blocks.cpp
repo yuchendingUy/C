@@ -15,11 +15,11 @@ static uint64_t str_hash(const char *s) {
 }
 
 static void index_build(void) {
-    name_index *ix = mcc_xmalloc(sizeof *ix);
+    name_index *ix = (name_index*)mcc_xmalloc(sizeof *ix);
     size_t n = 16;
     while (n < mcc_blocks.block_count * 2) n <<= 1;
     ix->mask = n - 1;
-    ix->slots = mcc_xmalloc(n * sizeof(int32_t));
+    ix->slots = (int32_t*)mcc_xmalloc(n * sizeof(int32_t));
     for (size_t i = 0; i < n; i++) ix->slots[i] = -1;
     for (uint32_t b = 0; b < mcc_blocks.block_count; b++) {
         size_t i = str_hash(mcc_blocks.blocks[b].name) & ix->mask;
@@ -32,7 +32,7 @@ static void index_build(void) {
 int32_t mcc_block_by_name(const char *name) {
     char buf[256];
     if (!strchr(name, ':')) { snprintf(buf, sizeof buf, "minecraft:%s", name); name = buf; }
-    name_index *ix = mcc_blocks.name_index;
+    name_index *ix = (name_index*)mcc_blocks.name_index;
     size_t i = str_hash(name) & ix->mask;
     while (ix->slots[i] >= 0) {
         if (!strcmp(mcc_blocks.blocks[ix->slots[i]].name, name)) return ix->slots[i];
@@ -97,7 +97,7 @@ bool mcc_blocks_load(const char *path) {
             d.emit_light = (uint8_t)atoi(t[7]);
             d.filter_light = (uint8_t)atoi(t[8]);
             d.nprops = (uint8_t)atoi(t[9]);
-            d.props = d.nprops ? mcc_xcalloc(d.nprops, sizeof(mcc_block_prop)) : NULL;
+            d.props = d.nprops ? (mcc_block_prop *)mcc_xcalloc(d.nprops, sizeof(mcc_block_prop)) : NULL;
             if (d.first_state != expect_state || !d.state_count) goto bad;
             expect_state += d.state_count;
             mcc_vec_push(&blocks, d);
@@ -110,7 +110,7 @@ bool mcc_blocks_load(const char *path) {
             if (!n || !c) goto bad;
             pr->name = mcc_xstrdup(n);
             pr->nvalues = atoi(c);
-            pr->values = mcc_xcalloc((size_t)pr->nvalues, sizeof(char *));
+            pr->values = (char**)mcc_xcalloc((size_t)pr->nvalues, sizeof(char *));
             for (int i = 0; i < pr->nvalues; i++) {
                 char *v = next_tok(&p);
                 if (!v) goto bad;
@@ -122,11 +122,12 @@ bool mcc_blocks_load(const char *path) {
     }
     fclose(f);
     if (cur && prop_fill != cur->nprops) { lineno++; goto bad_closed; }
+    { /* 新作用域：C++ 不允许 goto 跨过下面的变量初始化 */
 
     mcc_blocks.blocks = blocks.data;
     mcc_blocks.block_count = (uint32_t)blocks.len;
     mcc_blocks.state_count = expect_state;
-    mcc_blocks.states = mcc_xcalloc(expect_state, sizeof(mcc_state_info));
+    mcc_blocks.states = (mcc_state_info*)mcc_xcalloc(expect_state, sizeof(mcc_state_info));
     for (uint32_t b = 0; b < mcc_blocks.block_count; b++) {
         mcc_block_def *d = &mcc_blocks.blocks[b];
         /* 步长：最后一个属性变化最快 */
@@ -163,6 +164,7 @@ bool mcc_blocks_load(const char *path) {
     index_build();
     mcc_info("方块注册表载入：%u 种方块，%u 个状态，直接模式 %d 位", mcc_blocks.block_count, mcc_blocks.state_count, bits);
     return true;
+    }
 
 bad:
     fclose(f);

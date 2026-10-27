@@ -125,7 +125,7 @@ static void body_buoyancy(phys_body *b, double gscale) {
 typedef struct { phys_body **bodies; double gscale; } buoy_job;
 
 static void buoy_range(void *arg, size_t begin, size_t end) {
-    buoy_job *j = arg;
+    buoy_job *j = (buoy_job*)arg;
     for (size_t i = begin; i < end; i++) body_buoyancy(j->bodies[i], j->gscale);
 }
 

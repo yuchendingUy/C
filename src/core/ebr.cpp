@@ -5,7 +5,7 @@
 #define EBR_INACTIVE UINT64_MAX
 
 typedef struct {
-    _Atomic uint64_t epoch;   /* 当前所在纪元，EBR_INACTIVE 表示不在临界区 */
+    _Atomic(uint64_t) epoch;   /* 当前所在纪元，EBR_INACTIVE 表示不在临界区 */
     int depth;                /* 只由本线程访问，支持嵌套进入 */
     char pad[MCC_CACHELINE - sizeof(uint64_t) - sizeof(int)];
 } ebr_slot;
@@ -18,11 +18,11 @@ typedef struct retired {
 } retired;
 
 static ebr_slot g_slots[MCC_EBR_MAX_THREADS] MCC_ALIGNED;
-static _Atomic int g_slot_count;
-static _Atomic uint64_t g_epoch = 1;
+static _Atomic(int) g_slot_count;
+static _Atomic(uint64_t) g_epoch = 1;
 static pthread_mutex_t g_retire_lock = PTHREAD_MUTEX_INITIALIZER;
 static retired *g_retired;
-static _Thread_local int t_slot = -1;
+static thread_local int t_slot = -1;
 
 static ebr_slot *my_slot(void) {
     if (MCC_UNLIKELY(t_slot < 0)) {
@@ -51,7 +51,7 @@ void mcc_ebr_exit(void) {
 
 void mcc_ebr_retire(void *p, void (*free_fn)(void *)) {
     if (!p) return;
-    retired *r = mcc_xmalloc(sizeof *r);
+    retired *r = (retired*)mcc_xmalloc(sizeof *r);
     r->p = p;
     r->free_fn = free_fn;
     pthread_mutex_lock(&g_retire_lock);

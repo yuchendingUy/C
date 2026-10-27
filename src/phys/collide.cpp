@@ -51,12 +51,12 @@ static void make_side(vside *v, void *user) {
     memset(v, 0, sizeof *v);
     v->kind = *(int *)user;
     if (v->kind == PHYS_KIND_BODY) {
-        v->body = user;
+        v->body = (phys_body*)user;
         memcpy(v->offset, v->body->com, sizeof v->offset);
         const int32_t *a = v->body->bmin, *b = v->body->bmax;
         v->interior_check = a[0] != b[0] || a[1] != b[1] || a[2] != b[2];
     } else {
-        v->cell = user;
+        v->cell = (phys_cell*)user;
         memcpy(v->offset, v->cell->origin, sizeof v->offset);
         v->interior_check = true;
     }
@@ -165,7 +165,7 @@ typedef struct scratch {
     MCC_VEC(uint32_t) canon_idx;
 } scratch;
 
-static _Thread_local scratch t_s;
+static thread_local scratch t_s;
 
 /* ---------------- 方块缓存与配对规则 ---------------- */
 
@@ -178,7 +178,7 @@ static const phys_collider *solid_collider(vside *v, int32_t x, int32_t y, int32
 static void memo_begin(scratch *sc) {
     if (!sc->memo) {
         sc->memo_cap = 1024;
-        sc->memo = mcc_xcalloc(sc->memo_cap, sizeof *sc->memo);
+        sc->memo = (memo_ent*)mcc_xcalloc(sc->memo_cap, sizeof *sc->memo);
     }
     if (++sc->memo_gen == 0) {
         memset(sc->memo, 0, sc->memo_cap * sizeof *sc->memo);
@@ -191,7 +191,7 @@ static const memo_ent *memo_get(scratch *sc, vside *v, int32_t x, int32_t y, int
     if (sc->memo_used * 2 >= sc->memo_cap) { /* 太满：换一张两倍大的空表（缓存丢了也只是重算） */
         free(sc->memo);
         sc->memo_cap *= 2;
-        sc->memo = mcc_xcalloc(sc->memo_cap, sizeof *sc->memo);
+        sc->memo = (memo_ent*)mcc_xcalloc(sc->memo_cap, sizeof *sc->memo);
         sc->memo_gen = 1;
         sc->memo_used = 0;
     }
@@ -204,7 +204,7 @@ static const memo_ent *memo_get(scratch *sc, vside *v, int32_t x, int32_t y, int
             e->gen = sc->memo_gen;
             e->col = solid_collider(v, x, y, z);
             e->full = 0;
-            e->st = e->col ? (uint8_t)side_neighborhood(v, x, y, z, &e->full) : PHYS_VS_INTERIOR;
+            e->st = e->col ? (uint8_t)side_neighborhood(v, x, y, z, &e->full) : (uint8_t)PHYS_VS_INTERIOR;
             sc->memo_used++;
             return e;
         }
@@ -389,7 +389,7 @@ static uint32_t feature_hash(const int32_t s[3], int bs, const int32_t d[3], int
 
 /* 一对方块的所有碰撞箱接触，结果追加到 sc->points（A 局部系），并记录所属簇 */
 static void add_point(scratch *sc, b3Vec3 n, b3Vec3 p, float sep, uint32_t feat, float friction, float restitution);
-extern _Atomic uint64_t g_prof[8];
+extern _Atomic(uint64_t) g_prof[8];
 
 static void collide_block_pair(const pair_ctx *pc, const block_pair *bp, const pair_meta *pm, scratch *sc) {
     const phys_collider *colS = pm->colS, *colD = pm->colD;
@@ -553,7 +553,7 @@ static void collide_canonical(const pair_ctx *pc, const uint32_t *idx, size_t n,
     if (sc->gtab_cap < need) {
         free(sc->gtab);
         sc->gtab_cap = need;
-        sc->gtab = mcc_xmalloc(sizeof(uint32_t) * need);
+        sc->gtab = (uint32_t*)mcc_xmalloc(sizeof(uint32_t) * need);
     }
     memset(sc->gtab, 0xFF, sizeof(uint32_t) * sc->gtab_cap);
     mcc_vec_reserve(&sc->pair_group, n);
@@ -816,7 +816,7 @@ static void collide_voxel_convex(vside *a, const b3VoxelQuery *q, b3Transform xf
 }
 
 /* ---------------- 回调入口 ---------------- */
-_Atomic uint64_t g_prof[8];
+_Atomic(uint64_t) g_prof[8];
 
 
 static void scratch_reset(scratch *sc) {
@@ -830,7 +830,7 @@ static uint64_t body_volume(const phys_body *b) {
 }
 
 const b3VoxelManifold *phys_voxel_manifolds(const b3VoxelQuery *q_in, int *count, void *ctx) {
-    phys_scene *scene = ctx;
+    phys_scene *scene = (phys_scene*)ctx;
     /* Box3D 回收接触时允许两侧相对移动到回收距离才重新生成。
      * 方块结构在这段移动里可能有新的方块对碰上，所以生成时就把回收距离内的点都收进来 */
     b3VoxelQuery qv = *q_in;

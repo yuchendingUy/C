@@ -11,7 +11,7 @@
 typedef void (*mcc_job_fn)(void *arg);
 
 typedef struct mcc_job_group {
-    _Atomic int64_t pending;
+    _Atomic(int64_t) pending;
 } mcc_job_group;
 
 void mcc_jobs_start(int nthreads);

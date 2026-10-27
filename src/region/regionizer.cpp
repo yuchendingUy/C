@@ -9,7 +9,7 @@ void (*mcc_regionizer_debug_hook)(int ev, uint64_t from_id, uint64_t to_id, cons
 /* ---------- 区域与区段的创建/释放 ---------- */
 
 static void region_free(void *p) {
-    mcc_region *r = p;
+    mcc_region *r = (mcc_region*)p;
     pthread_mutex_destroy(&r->task_lock);
     mcc_vec_free(&r->sections);
     mcc_vec_free(&r->expecting_from);
@@ -27,7 +27,7 @@ void mcc_region_unref(mcc_region *r) {
 }
 
 static mcc_region *region_new(mcc_regionizer *rz, int state) {
-    mcc_region *r = mcc_xcalloc(1, sizeof *r);
+    mcc_region *r = (mcc_region*)mcc_xcalloc(1, sizeof *r);
     r->id = atomic_fetch_add(&rz->next_region_id, 1);
     atomic_init(&r->state, state);
     atomic_init(&r->refs, 1);
@@ -48,13 +48,13 @@ static void region_retire(mcc_regionizer *rz, mcc_region *r) {
 }
 
 MCC_INLINE mcc_section *sec_get(mcc_regionizer *rz, int32_t sx, int32_t sz) {
-    return mcc_cmap_get(&rz->sections, mcc_key2(sx, sz));
+    return (mcc_section*)mcc_cmap_get(&rz->sections, mcc_key2(sx, sz));
 }
 
 static mcc_section *sec_get_or_create(mcc_regionizer *rz, int32_t sx, int32_t sz, bool *created) {
     mcc_section *s = sec_get(rz, sx, sz);
     if (s) { *created = false; return s; }
-    s = mcc_xcalloc(1, sizeof *s);
+    s = (mcc_section*)mcc_xcalloc(1, sizeof *s);
     s->sx = sx;
     s->sz = sz;
     atomic_init(&s->region, NULL);
@@ -67,7 +67,7 @@ static mcc_section *sec_get_or_create(mcc_regionizer *rz, int32_t sx, int32_t sz
 /* ---------- 初始化 ---------- */
 
 void mcc_regionizer_init(mcc_regionizer *rz, const mcc_regionizer_config *cfg, const mcc_region_callbacks *cb) {
-    memset(rz, 0, sizeof *rz);
+    memset((void *)rz, 0, sizeof *rz);
     mcc_regionizer_config d = { 4, 2, 1, 10, 4 };
     if (cfg) {
         d = *cfg;
@@ -89,7 +89,7 @@ void mcc_regionizer_destroy(mcc_regionizer *rz) {
     mcc_region_vec regions = {0};
     MCC_CMAP_FOREACH(&rz->sections, k, v, {
         (void)k;
-        mcc_section *s = v;
+        mcc_section *s = (mcc_section*)v;
         mcc_region *r = atomic_load(&s->region);
         if (r && atomic_load(&r->state) != MCC_REGION_DEAD) {
             atomic_store(&r->state, MCC_REGION_DEAD);
@@ -297,7 +297,7 @@ void mcc_regionizer_remove_chunk(mcc_regionizer *rz, int32_t cx, int32_t cz) {
 
 mcc_region *mcc_regionizer_region_of_chunk(mcc_regionizer *rz, int32_t cx, int32_t cz) {
     const int sh = rz->cfg.section_shift;
-    mcc_section *s = mcc_cmap_get(&rz->sections, mcc_key2(cx >> sh, cz >> sh));
+    mcc_section *s = (mcc_section*)mcc_cmap_get(&rz->sections, mcc_key2(cx >> sh, cz >> sh));
     return s ? atomic_load_explicit(&s->region, memory_order_acquire) : NULL;
 }
 
@@ -466,7 +466,7 @@ bool mcc_regionizer_queue_chunk_task(mcc_regionizer *rz, int32_t cx, int32_t cz,
     const uint64_t key = mcc_key2(cx >> sh, cz >> sh);
     mcc_ebr_enter();
     for (;;) {
-        mcc_section *s = mcc_cmap_get(&rz->sections, key);
+        mcc_section *s = (mcc_section*)mcc_cmap_get(&rz->sections, key);
         if (!s) { mcc_ebr_exit(); return false; }
         mcc_region *r = atomic_load_explicit(&s->region, memory_order_acquire);
         if (!r) { mcc_ebr_exit(); return false; }
@@ -511,7 +511,7 @@ bool mcc_regionizer_verify(mcc_regionizer *rz, char *err, size_t errlen) {
     pthread_mutex_lock(&rz->lock);
     mcc_region_vec regions = {0};
     MCC_CMAP_FOREACH(&rz->sections, k, v, {
-        mcc_section *s = v;
+        mcc_section *s = (mcc_section*)v;
         if (mcc_key2(s->sx, s->sz) != k) VFAIL("区段键不符");
         mcc_region *r = atomic_load(&s->region);
         if (!r) VFAIL("区段 (%d,%d) 无区域", s->sx, s->sz);

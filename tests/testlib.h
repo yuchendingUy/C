@@ -47,7 +47,7 @@ static void test_fill(mcc_chunk_store *st, block_fn f, void *ctx, int32_t cx0, i
 /* 地形：y < 61 全是石头（顶面 y=61）；相对 (ox, oz) x∈[64,96)、z∈[-16,16) 挖出水池，水面顶 y=71 */
 typedef struct { int32_t ox, oz; } terrain_ctx;
 static mcc_state_t terrain(int32_t x, int32_t y, int32_t z, void *p) {
-    terrain_ctx *t = p;
+    terrain_ctx *t = (terrain_ctx *)p;
     int32_t lx = x - t->ox, lz = z - t->oz;
     bool pool = lx >= 64 && lx < 96 && lz >= -16 && lz < 16;
     if (pool) {
@@ -61,7 +61,7 @@ static mcc_state_t terrain(int32_t x, int32_t y, int32_t z, void *p) {
 /* 子世界：地块坐标里的 3×3×3 实心立方体 */
 typedef struct { int32_t bx, by, bz; } cube_ctx;
 static mcc_state_t cube(int32_t x, int32_t y, int32_t z, void *p) {
-    cube_ctx *c = p;
+    cube_ctx *c = (cube_ctx *)p;
     return (x >= c->bx && x < c->bx + 3 && y >= c->by && y < c->by + 3 && z >= c->bz && z < c->bz + 3) ? STONE : 0;
 }
 

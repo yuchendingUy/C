@@ -20,13 +20,13 @@
 
 typedef struct {
     mcc_cmap chunks;           /* 区块键 → 引用计数 */
-    _Atomic int ticking_now;
+    _Atomic(int) ticking_now;
 } rdata;
 
 static mcc_regionizer g_rz;
 static mcc_tick_scheduler *g_sched;
-static _Atomic bool g_fail;
-static _Atomic uint64_t g_task_runs, g_inserts, g_removes;
+static _Atomic(bool) g_fail;
+static _Atomic(uint64_t) g_task_runs, g_inserts, g_removes;
 
 /* ---------- 每区块事件记录（定位并发时序错误） ---------- */
 enum { EV_PUSH_INS = 1, EV_PUSH_REM, EV_MOVE_MERGE, EV_MOVE_SPLIT, EV_EXEC_INS, EV_EXEC_REM, EV_DATA_MERGE, EV_DATA_SPLIT };
@@ -39,15 +39,15 @@ static uint64_t g_ev_seq;
 static void task_insert(mcc_region *r, int32_t cx, int32_t cz, void *arg);
 static void ev(uint64_t key, int e, uint64_t a, uint64_t b) {
     pthread_mutex_lock(&g_ev_lock);
-    evlog *l = mcc_cmap_get(&g_ev, key);
-    if (!l) { l = mcc_xcalloc(1, sizeof *l); mcc_cmap_put(&g_ev, key, l); }
+    evlog *l = (evlog*)mcc_cmap_get(&g_ev, key);
+    if (!l) { l = (evlog*)mcc_xcalloc(1, sizeof *l); mcc_cmap_put(&g_ev, key, l); }
     evrec *x = &l->r[l->n++ % 48];
     x->ev = e; x->a = a; x->b = b; x->seq = ++g_ev_seq;
     pthread_mutex_unlock(&g_ev_lock);
 }
 static void dump_ev(int32_t cx, int32_t cz) {
     pthread_mutex_lock(&g_ev_lock);
-    evlog *l = mcc_cmap_get(&g_ev, mcc_key2(cx, cz));
+    evlog *l = (evlog*)mcc_cmap_get(&g_ev, mcc_key2(cx, cz));
     if (l) {
         int start = l->n > 48 ? l->n - 48 : 0;
         for (int i = start; i < l->n; i++) {
@@ -77,14 +77,14 @@ static void cnt_add(mcc_cmap *m, uint64_t k, long d) {
 
 static void *cb_create(void *ctx, mcc_region *r) {
     (void)ctx; (void)r;
-    rdata *d = mcc_xcalloc(1, sizeof *d);
+    rdata *d = (rdata*)mcc_xcalloc(1, sizeof *d);
     mcc_cmap_init(&d->chunks, 64);
     return d;
 }
 
 static void cb_destroy(void *ctx, mcc_region *r) {
     (void)ctx;
-    rdata *d = r->data;
+    rdata *d = (rdata*)r->data;
     CHECK(mcc_cmap_size(&d->chunks) == 0, "区域 %llu 销毁时仍有 %zu 个区块",
           (unsigned long long)r->id, mcc_cmap_size(&d->chunks));
     mcc_cmap_destroy(&d->chunks);
@@ -98,7 +98,7 @@ static void cb_active(void *ctx, mcc_region *r) {
 
 static void cb_merge(void *ctx, mcc_region *from, mcc_region *into) {
     (void)ctx;
-    rdata *f = from->data, *t = into->data;
+    rdata *f = (rdata*)from->data, *t = (rdata*)into->data;
     MCC_CMAP_FOREACH(&f->chunks, k, v, {
         ev(k, EV_DATA_MERGE, from->id, into->id);
         cnt_add(&t->chunks, k, (long)(uintptr_t)v);
@@ -108,7 +108,7 @@ static void cb_merge(void *ctx, mcc_region *from, mcc_region *into) {
 
 static void cb_split(void *ctx, mcc_region *from, mcc_region **into, size_t n) {
     (void)ctx; (void)into; (void)n;
-    rdata *f = from->data;
+    rdata *f = (rdata*)from->data;
     MCC_CMAP_FOREACH(&f->chunks, k, v, {
         mcc_region *owner = mcc_regionizer_region_of_chunk_locked(&g_rz, mcc_key2_x(k), mcc_key2_z(k));
         if (owner && owner != from) {
@@ -134,7 +134,7 @@ static void task_remove(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
     (void)arg;
     CHECK(r != NULL, "卸载任务被取消：区块 (%d,%d)", cx, cz);
     if (!r) return;
-    rdata *d = r->data;
+    rdata *d = (rdata*)r->data;
     ev(mcc_key2(cx, cz), EV_EXEC_REM, 0, r->id);
     CHECKC(cnt_get(&d->chunks, mcc_key2(cx, cz)) > 0, cx, cz, "卸载时区域 %llu 中没有区块 (%d,%d)",
           (unsigned long long)r->id, cx, cz);
@@ -147,7 +147,7 @@ static void task_remove(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
 
 static void tick(void *ctx, mcc_region *r, uint64_t start) {
     (void)ctx; (void)start;
-    rdata *d = r->data;
+    rdata *d = (rdata*)r->data;
     CHECK(atomic_fetch_add(&d->ticking_now, 1) == 0, "区域 %llu 被两个线程同时推进", (unsigned long long)r->id);
     mcc_region_run_tasks(r);
     mcc_ebr_enter();
@@ -168,7 +168,7 @@ static void tick(void *ctx, mcc_region *r, uint64_t start) {
 
 static pthread_mutex_t g_load_lock = PTHREAD_MUTEX_INITIALIZER;
 static mcc_cmap g_refs; /* 区块 → 被多少玩家视野引用，受 g_load_lock 保护 */
-static _Atomic bool g_stop_players;
+static _Atomic(bool) g_stop_players;
 
 #define VIEW 3
 
@@ -250,8 +250,8 @@ static void *player_thread(void *p) {
 
 /* ---------- 校验线程 ---------- */
 
-static _Atomic bool g_stop_verify;
-static _Atomic uint64_t g_verifies;
+static _Atomic(bool) g_stop_verify;
+static _Atomic(uint64_t) g_verifies;
 
 static void *verify_thread(void *p) {
     (void)p;
@@ -269,7 +269,7 @@ static void *verify_thread(void *p) {
 
 /* ---------- 任务线程池正确性 ---------- */
 
-static _Atomic uint64_t g_sum;
+static _Atomic(uint64_t) g_sum;
 static void sum_range(void *arg, size_t b, size_t e) {
     (void)arg;
     uint64_t s = 0;
@@ -313,7 +313,7 @@ int main(int argc, char **argv) {
     g_sched = mcc_tick_scheduler_create(&g_rz, &tc);
     mcc_tick_scheduler_start(g_sched);
 
-    pthread_t vt, *pt = mcc_xmalloc(sizeof(pthread_t) * (size_t)players);
+    pthread_t vt, *pt = (pthread_t*)mcc_xmalloc(sizeof(pthread_t) * (size_t)players);
     pthread_create(&vt, NULL, verify_thread, NULL);
     for (int i = 0; i < players; i++) pthread_create(&pt[i], NULL, player_thread, (void *)(uintptr_t)(i + 1));
 

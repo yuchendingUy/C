@@ -13,14 +13,14 @@ static void hist_add(phys_axis_hist *h, int32_t v, int d) {
     if (!h->cnt) {
         h->len = 32;
         h->lo = v - 16;
-        h->cnt = mcc_xcalloc(h->len, sizeof(uint32_t));
+        h->cnt = (uint32_t*)mcc_xcalloc(h->len, sizeof(uint32_t));
     }
     if (v < h->lo || v >= h->lo + (int32_t)h->len) {
         int32_t lo = MCC_MIN(h->lo, v), hi = MCC_MAX(h->lo + (int32_t)h->len, v + 1);
         uint32_t span = (uint32_t)(hi - lo);
         uint32_t nlen = span * 2;
         int32_t nlo = lo - (int32_t)(span / 2);
-        uint32_t *n = mcc_xcalloc(nlen, sizeof(uint32_t));
+        uint32_t *n = (uint32_t*)mcc_xcalloc(nlen, sizeof(uint32_t));
         memcpy(n + (h->lo - nlo), h->cnt, h->len * sizeof(uint32_t));
         free(h->cnt);
         h->cnt = n;

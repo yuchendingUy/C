@@ -69,7 +69,7 @@ th { font-weight: 500; color: var(--muted); font-size: 13px; }
 </header>
 
 <section>
-  <span class="layer">第一层 · src/region/regionizer.c</span>
+  <span class="layer">第一层 · src/region/regionizer.cpp</span>
   <h2>把世界切成区域</h2>
   <p>世界按区段划格，一格是 16×16 个区块。有已加载区块的格叫活区段，它外面 2 圈算缓冲区，和它属于同一个区域。所以任何两个区域之间必定隔着空区段，没有共享的可变数据。</p>
   <figure>
@@ -167,7 +167,7 @@ th { font-weight: 500; color: var(--muted); font-size: 13px; }
 </section>
 
 <section>
-  <span class="layer">第二层 · src/region/tick_scheduler.c</span>
+  <span class="layer">第二层 · src/region/tick_scheduler.cpp</span>
   <h2>推进线程轮流推进区域</h2>
   <p>固定数量的推进线程共用一个按"下一刻开始时间"排序的小顶堆。线程取堆顶到期的区域，把它从就绪抢成推进中，推完一刻放回堆里。每个区域各自按每 50ms 一刻走，谁也不等谁。</p>
   <figure>
@@ -265,7 +265,7 @@ th { font-weight: 500; color: var(--muted); font-size: 13px; }
 </section>
 
 <section>
-  <span class="layer">第三层 · src/core/jobs.c</span>
+  <span class="layer">第三层 · src/core/jobs.cpp</span>
   <h2>区域内部的重活拆给任务线程池</h2>
   <p>一个区域的普通逻辑由它的推进线程顺序执行。像物理步进这样的大计算，Box3D 本身能并行，它的任务接口接到了 mcc 的线程池上，这一刻的物理会分散到所有工作线程一起算。</p>
   <figure>

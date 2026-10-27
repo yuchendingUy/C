@@ -19,8 +19,8 @@ struct mcc_tick_scheduler {
     heap_ent *heap;
     size_t len, cap;
     pthread_t *threads;
-    _Atomic bool stop;
-    _Atomic uint64_t ticks, skipped, max_tick;
+    _Atomic(bool) stop;
+    _Atomic(uint64_t) ticks, skipped, max_tick;
 };
 
 /* ---------- 小顶堆 ---------- */
@@ -28,7 +28,7 @@ struct mcc_tick_scheduler {
 static void heap_push(mcc_tick_scheduler *s, heap_ent e) {
     if (s->len == s->cap) {
         s->cap = s->cap ? s->cap * 2 : 64;
-        s->heap = mcc_xrealloc(s->heap, s->cap * sizeof(heap_ent));
+        s->heap = (heap_ent*)mcc_xrealloc(s->heap, s->cap * sizeof(heap_ent));
     }
     size_t i = s->len++;
     while (i) {
@@ -98,7 +98,7 @@ static void abs_deadline(struct timespec *ts, uint64_t due_mono) {
 }
 
 static void *tick_thread(void *p) {
-    mcc_tick_scheduler *s = p;
+    mcc_tick_scheduler *s = (mcc_tick_scheduler*)p;
     uint64_t reclaim_at = 0;
     pthread_mutex_lock(&s->lock);
     while (!atomic_load(&s->stop)) {
@@ -167,7 +167,7 @@ static void *tick_thread(void *p) {
 }
 
 mcc_tick_scheduler *mcc_tick_scheduler_create(mcc_regionizer *rz, const mcc_tick_config *cfg) {
-    mcc_tick_scheduler *s = mcc_xcalloc(1, sizeof *s);
+    mcc_tick_scheduler *s = (mcc_tick_scheduler*)mcc_xcalloc(1, sizeof *s);
     s->rz = rz;
     s->cfg = *cfg;
     if (s->cfg.threads < 1) s->cfg.threads = 1;
@@ -186,7 +186,7 @@ mcc_tick_scheduler *mcc_tick_scheduler_create(mcc_regionizer *rz, const mcc_tick
 
 void mcc_tick_scheduler_start(mcc_tick_scheduler *s) {
     atomic_store(&s->stop, false);
-    s->threads = mcc_xmalloc(sizeof(pthread_t) * (size_t)s->cfg.threads);
+    s->threads = (pthread_t*)mcc_xmalloc(sizeof(pthread_t) * (size_t)s->cfg.threads);
     for (int i = 0; i < s->cfg.threads; i++) {
         pthread_create(&s->threads[i], NULL, tick_thread, s);
         char name[32];

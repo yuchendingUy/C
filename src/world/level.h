@@ -57,8 +57,8 @@ struct mcc_level {
     mcc_level_config cfg;
     mcc_regionizer rz;
     mcc_tick_scheduler *sched;
-    _Atomic int32_t next_sublevel_id;
-    _Atomic uint64_t stat_chunk_moves, stat_body_moves;
+    _Atomic(int32_t) next_sublevel_id;
+    _Atomic(uint64_t) stat_chunk_moves, stat_body_moves;
 };
 
 mcc_level *mcc_level_create(const mcc_level_config *cfg);

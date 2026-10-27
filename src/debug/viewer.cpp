@@ -62,7 +62,7 @@ struct mcc_viewer {
     mcc_level *lv;
     sock_t listen_fd;
     pthread_t thread;
-    _Atomic bool stop;
+    _Atomic(bool) stop;
     pthread_mutex_t lock;
     MCC_VEC(client *) clients;
     uint32_t next_client;
@@ -70,7 +70,7 @@ struct mcc_viewer {
     mcc_hmap region_clear;      /* 区域编号 → 已处理的清空序号 + 1 */
     mcc_hmap region_stats;      /* 区域编号 → region_stat*（推进统计） */
     double stats_at;            /* 上次发统计的时间（毫秒） */
-    _Atomic uint64_t clear_epoch;
+    _Atomic(uint64_t) clear_epoch;
     char web_dir[512];
     mcc_viewer_spawn_fn spawn;
     void *ctx;
@@ -85,7 +85,7 @@ static void put(bytes *b, const void *p, size_t n) {
     if (b->len + n > b->cap) {
         size_t cap = b->cap ? b->cap * 2 : 256;
         while (cap < b->len + n) cap *= 2;
-        b->data = mcc_xrealloc(b->data, cap);
+        b->data = (uint8_t*)mcc_xrealloc(b->data, cap);
         b->cap = cap;
     }
     memcpy(b->data + b->len, p, n);
@@ -101,7 +101,7 @@ static void put_f64(bytes *b, double v) { put(b, &v, 8); }
 static void sha1(const uint8_t *msg, size_t len, uint8_t out[20]) {
     uint32_t h[5] = { 0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0 };
     size_t total = ((len + 8) / 64 + 1) * 64;
-    uint8_t *m = mcc_xcalloc(total, 1);
+    uint8_t *m = (uint8_t*)mcc_xcalloc(total, 1);
     memcpy(m, msg, len);
     m[len] = 0x80;
     uint64_t bits = (uint64_t)len * 8;
@@ -156,7 +156,7 @@ static void build_colors(mcc_viewer *v) {
         { "glass", 190, 220, 230 }, { "wool", 230, 230, 230 }, { "iron", 210, 210, 210 }, { "gold", 240, 200, 60 },
         { "ice", 160, 200, 250 }, { "snow", 245, 250, 250 }, { "bedrock", 50, 50, 50 },
     };
-    v->colors = mcc_xmalloc(mcc_blocks.state_count * 3u);
+    v->colors = (uint8_t*)mcc_xmalloc(mcc_blocks.state_count * 3u);
     for (uint32_t s = 0; s < mcc_blocks.state_count; s++) {
         const char *name = mcc_state_def(s)->name;
         uint8_t *c = v->colors + s * 3;
@@ -211,9 +211,9 @@ typedef struct region_stat {
 typedef struct { mcc_viewer *v; uint32_t client; } terrain_req;
 
 static void task_terrain(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
-    terrain_req *q = arg;
+    terrain_req *q = (terrain_req*)arg;
     if (r) {
-        mcc_region_world *w = r->data;
+        mcc_region_world *w = (mcc_region_world*)r->data;
         const mcc_chunk *c = mcc_store_chunk(w->chunks, cx, cz);
         if (c) {
             bytes b = { 0 };
@@ -285,7 +285,7 @@ static void encode_shape(mcc_viewer *v, const mcc_sublevel *sl, bytes *b) {
     uint32_t it = 0;
     void *p;
     while (mcc_hmap_next(&sl->blocks.chunks, &it, NULL, &p)) {
-        const mcc_chunk *c = p;
+        const mcc_chunk *c = (const mcc_chunk*)p;
         for (int i = 0; i < c->nsec; i++) {
             const mcc_chunk_section *s = c->sec[i];
             if (!s || !s->non_air) continue;
@@ -328,14 +328,14 @@ static void begin_poses(bytes *b, double ms) {
 static void end_poses(bytes *b, uint32_t n) { memcpy(b->data + 9, &n, 4); }
 
 void mcc_viewer_post_tick(void *vp, mcc_region *r, mcc_region_world *w) {
-    mcc_viewer *v = vp;
+    mcc_viewer *v = (mcc_viewer*)vp;
     double now_ms = mcc_nanotime() / 1e6;
 
     /* 推进统计：网络线程每秒汇总一次 */
     pthread_mutex_lock(&v->lock);
-    region_stat *rs = mcc_hmap_get(&v->region_stats, r->id);
+    region_stat *rs = (region_stat*)mcc_hmap_get(&v->region_stats, r->id);
     if (!rs) {
-        rs = mcc_xcalloc(1, sizeof *rs);
+        rs = (region_stat*)mcc_xcalloc(1, sizeof *rs);
         mcc_hmap_put(&v->region_stats, r->id, rs);
     }
     /* 回调在推进里面，本刻还没结束：记上一刻的实际耗时（调度器量的，含本回调） */
@@ -383,7 +383,7 @@ void mcc_viewer_post_tick(void *vp, mcc_region *r, mcc_region_world *w) {
     uint32_t it = 0;
     void *p;
     while (mcc_hmap_next(&w->sublevels, &it, NULL, &p)) {
-        mcc_sublevel *sl = p;
+        mcc_sublevel *sl = (mcc_sublevel*)p;
         phys_body *pb = phys_body_get(w->phys, sl->id);
         if (!pb || !pb->has_com) continue;
         if (b3Body_IsAwake(pb->body)) {
@@ -394,7 +394,7 @@ void mcc_viewer_post_tick(void *vp, mcc_region *r, mcc_region_world *w) {
     end_poses(&awake, na);
 
     pthread_mutex_lock(&v->lock);
-    region_stat *rs2 = mcc_hmap_get(&v->region_stats, r->id);
+    region_stat *rs2 = (region_stat*)mcc_hmap_get(&v->region_stats, r->id);
     if (rs2) rs2->awake = na;
     for (size_t k = 0; k < v->clients.len; k++) {
         client *c = v->clients.data[k];
@@ -403,7 +403,7 @@ void mcc_viewer_post_tick(void *vp, mcc_region *r, mcc_region_world *w) {
         uint32_t ne = 0;
         it = 0;
         while (mcc_hmap_next(&w->sublevels, &it, NULL, &p)) {
-            mcc_sublevel *sl = p;
+            mcc_sublevel *sl = (mcc_sublevel*)p;
             phys_body *pb = phys_body_get(w->phys, sl->id);
             if (!pb || !pb->has_com || mcc_hmap_get(&c->known, (uint64_t)(uint32_t)sl->id)) continue;
             shape.len = 0;
@@ -439,7 +439,7 @@ static void client_free(client *c) {
 
 static void send_terrain(mcc_viewer *v, uint32_t client_id) {
     for (size_t i = 0; i < v->chunks.len; i++) {
-        terrain_req *q = mcc_xmalloc(sizeof *q);
+        terrain_req *q = (terrain_req*)mcc_xmalloc(sizeof *q);
         q->v = v;
         q->client = client_id;
         if (!mcc_regionizer_queue_chunk_task(&v->lv->rz, mcc_key2_x(v->chunks.data[i]), mcc_key2_z(v->chunks.data[i]), task_terrain, q))
@@ -518,9 +518,9 @@ typedef struct { int32_t id; double p[3], dv[3]; } push_req;
 static void task_push(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
     (void)cx;
     (void)cz;
-    push_req *q = arg;
+    push_req *q = (push_req*)arg;
     if (r) {
-        mcc_region_world *w = r->data;
+        mcc_region_world *w = (mcc_region_world*)r->data;
         phys_body *b = w->phys ? phys_body_get(w->phys, q->id) : NULL;
         if (b) {
             double m = b3Body_GetMass(b->body), sp = sqrt(q->dv[0] * q->dv[0] + q->dv[1] * q->dv[1] + q->dv[2] * q->dv[2]);
@@ -537,7 +537,7 @@ static void handle_command(mcc_viewer *v, const char *cmd) {
     int n;
     push_req pr;
     if (sscanf(cmd, "push %d %lf %lf %lf %lf %lf %lf", &pr.id, &pr.p[0], &pr.p[1], &pr.p[2], &pr.dv[0], &pr.dv[1], &pr.dv[2]) == 7) {
-        push_req *q = mcc_xmalloc(sizeof *q);
+        push_req *q = (push_req*)mcc_xmalloc(sizeof *q);
         *q = pr;
         if (!mcc_regionizer_queue_chunk_task(&v->lv->rz, (int32_t)floor(pr.p[0]) >> 4, (int32_t)floor(pr.p[2]) >> 4, task_push, q)) free(q);
     } else if (sscanf(cmd, "spawn %lf %lf %d", &x, &z, &n) == 3) {
@@ -579,7 +579,7 @@ static void handle_ws(mcc_viewer *v, client *c) {
 }
 
 static void *net_main(void *p) {
-    mcc_viewer *v = p;
+    mcc_viewer *v = (mcc_viewer*)p;
     MCC_VEC(struct pollfd) fds = { 0 };
     while (!atomic_load(&v->stop)) {
         fds.len = 0;
@@ -603,7 +603,7 @@ static void *net_main(void *p) {
                 set_nonblock(fd);
                 int one = 1;
                 setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof one);
-                client *c = mcc_xcalloc(1, sizeof *c);
+                client *c = (client*)mcc_xcalloc(1, sizeof *c);
                 c->fd = fd;
                 mcc_hmap_init(&c->known, 64);
                 pthread_mutex_lock(&v->lock);
@@ -662,7 +662,7 @@ static void *net_main(void *p) {
             uint64_t key;
             void *val;
             while (mcc_hmap_next(&v->region_stats, &it, &key, &val)) {
-                region_stat *rs = val;
+                region_stat *rs = (region_stat*)val;
                 if (now - rs->last > 3000) { /* 区域已合并或销毁 */
                     mcc_hmap_remove(&v->region_stats, key);
                     free(rs);
@@ -712,7 +712,7 @@ static void *net_main(void *p) {
 /* ------------------------------------------------------------------ */
 
 mcc_viewer *mcc_viewer_start(mcc_level *lv, int port, const char *web_dir, mcc_viewer_spawn_fn spawn, void *ctx) {
-    mcc_viewer *v = mcc_xcalloc(1, sizeof *v);
+    mcc_viewer *v = (mcc_viewer*)mcc_xcalloc(1, sizeof *v);
     v->lv = lv;
     v->spawn = spawn;
     v->ctx = ctx;

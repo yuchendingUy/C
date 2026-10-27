@@ -18,12 +18,12 @@ typedef struct {
 typedef struct {
     float friction, restitution, volume;
     uint32_t collider;
-} baked;
+} baked_t;
 
 typedef struct {
     int nboxes;
     float *boxes;        /* 每箱 6 个数 */
-    MCC_VEC(baked) baked;  /* 已按不同材质烘焙的碰撞体 */
+    MCC_VEC(baked_t) baked;  /* 已按不同材质烘焙的碰撞体 */
     bool full;
 } shape_def;
 
@@ -43,12 +43,12 @@ static char *tok(char **p) {
 static uint32_t shape_collider(shape_def *sh, const block_props *bp) {
     if (!sh->nboxes) return 0;
     for (size_t i = 0; i < sh->baked.len; i++) {
-        const baked *k = &sh->baked.data[i];
+        const baked_t *k = &sh->baked.data[i];
         if (k->friction == bp->friction && k->restitution == bp->restitution && k->volume == bp->volume) return k->collider;
     }
     uint32_t id = phys_collider_new(bp->friction, bp->volume, bp->restitution, false, false, 0);
     for (int b = 0; b < sh->nboxes; b++) phys_collider_add_box(id, sh->boxes + b * 6, sh->boxes + b * 6 + 3);
-    mcc_vec_push(&sh->baked, ((baked){ bp->friction, bp->restitution, bp->volume, id }));
+    mcc_vec_push(&sh->baked, ((baked_t){ bp->friction, bp->restitution, bp->volume, id }));
     return id;
 }
 
@@ -111,10 +111,10 @@ static bool load_props(const char *path, block_props *props) {
 
 bool phys_block_colliders_load(const char *path, const char *props_path) {
     if (!mcc_blocks.states) mcc_log_fatal("载入碰撞形状前须先载入方块注册表");
-    block_props *props = mcc_xmalloc(sizeof *props * mcc_blocks.block_count);
+    block_props *props = (block_props*)mcc_xmalloc(sizeof *props * mcc_blocks.block_count);
     if (!load_props(props_path, props)) { free(props); return false; }
     free(phys_state_mass);
-    phys_state_mass = mcc_xcalloc(mcc_blocks.state_count, sizeof(float));
+    phys_state_mass = (float*)mcc_xcalloc(mcc_blocks.state_count, sizeof(float));
     FILE *f = fopen(path, "r");
     if (!f) { mcc_error("无法打开碰撞形状文件 %s", path); free(props); return false; }
     MCC_VEC(shape_def) shapes = {0};
@@ -134,7 +134,7 @@ bool phys_block_colliders_load(const char *path, const char *props_path) {
             while (shapes.len <= id) mcc_vec_push(&shapes, (shape_def){0});
             shape_def *sh = &shapes.data[id];
             sh->nboxes = atoi(b);
-            sh->boxes = mcc_xmalloc(sizeof(float) * 6 * (size_t)(sh->nboxes ? sh->nboxes : 1));
+            sh->boxes = (float*)mcc_xmalloc(sizeof(float) * 6 * (size_t)(sh->nboxes ? sh->nboxes : 1));
             for (int i = 0; i < sh->nboxes * 6; i++) {
                 char *v = tok(&p);
                 if (!v) { ok = false; break; }

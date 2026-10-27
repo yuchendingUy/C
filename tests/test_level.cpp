@@ -81,10 +81,10 @@ typedef struct {
 
 static void task_probe(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
     (void)cx; (void)cz;
-    probe *p = arg;
+    probe *p = (probe*)arg;
     pthread_mutex_lock(&p->m);
     if (r) {
-        mcc_region_world *w = r->data;
+        mcc_region_world *w = (mcc_region_world*)r->data;
         p->region = r->id;
         p->sublevels = 0;
         p->min_y = 1e9;
@@ -93,7 +93,7 @@ static void task_probe(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
         uint32_t it = 0;
         void *v;
         while (mcc_hmap_next(&w->sublevels, &it, NULL, &v)) {
-            mcc_sublevel *sl = v;
+            mcc_sublevel *sl = (mcc_sublevel*)v;
             double pose[7] = { 0, NAN, 0, 0, 0, 0, 1 };
             if (w->phys && phys_body_get(w->phys, sl->id)) phys_body_get_pose(w->phys, sl->id, pose);
             if (p->sublevels < 256) { p->ids[p->sublevels] = sl->id; p->y[p->sublevels] = pose[1]; }
@@ -126,9 +126,9 @@ static bool probe_at(int32_t cx, int32_t cz, probe *p) {
 typedef struct { int32_t x0, z0, x1, z1, y0, y1; } dig_req;
 static void task_dig(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
     (void)cx; (void)cz;
-    dig_req *d = arg;
+    dig_req *d = (dig_req*)arg;
     if (r) {
-        mcc_region_world *w = r->data;
+        mcc_region_world *w = (mcc_region_world*)r->data;
         for (int32_t x = d->x0; x <= d->x1; x++)
             for (int32_t z = d->z0; z <= d->z1; z++)
                 for (int32_t y = d->y0; y <= d->y1; y++) mcc_store_set(w->chunks, x, y, z, 0);
@@ -234,7 +234,7 @@ int main(void) {
           pm.min_y, pm.max_y);
 
     /* 第 0 个结构在 A 的 (10, 10) 附近：挖坑，它应当掉下去 */
-    dig_req *d = mcc_xmalloc(sizeof *d);
+    dig_req *d = (dig_req*)mcc_xmalloc(sizeof *d);
     *d = (dig_req){ 5, 5, 15, 15, 55, 60 };
     mcc_regionizer_queue_chunk_task(&g_lv->rz, 0, 0, task_dig, d);
     sleep_ms(2000);
