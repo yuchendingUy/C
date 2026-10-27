@@ -1,0 +1,39 @@
+# mcc 方块物理属性（可调的初始值，不是从 Sable 抄来的数值）
+#
+# P <方块名或 *后缀> 键=值 ...
+#   mass         质量（相对普通实心方块 1.0）；默认：有碰撞箱 1.0，无碰撞箱的非空气方块 0.1，空气/纯流体 0
+#   friction     摩擦倍率（相对默认 1.0）。由原版滑度换算：(1 - 滑度) / (1 - 0.6)
+#   restitution  弹性 0~1，默认 0
+#   volume       浮力体积，默认 1.0；质量 / 体积 < 1.07 时在水中上浮
+# 后写的条目覆盖先写的；"*_wool" 匹配所有以 _wool 结尾的方块
+
+# 原版滑度：冰 0.98、浮冰 0.98、蓝冰 0.989、黏液块 0.8
+P minecraft:ice friction=0.05 mass=0.9
+P minecraft:packed_ice friction=0.05 mass=0.9
+P minecraft:blue_ice friction=0.0275 mass=0.9
+P minecraft:frosted_ice friction=0.05 mass=0.9
+P minecraft:slime_block friction=0.5 restitution=0.8 mass=0.6
+P minecraft:honey_block friction=2.0 mass=0.8
+
+# 轻的
+P *_wool mass=0.25
+P *_carpet mass=0.05
+P *_leaves mass=0.2
+P *_planks mass=0.6
+P *_log mass=0.7
+P *_wood mass=0.7
+P *_glass mass=0.8
+P minecraft:glass mass=0.8
+P minecraft:scaffolding mass=0.1
+
+# 重的
+P minecraft:iron_block mass=4
+P minecraft:gold_block mass=5
+P minecraft:netherite_block mass=6
+P minecraft:diamond_block mass=3
+P minecraft:copper_block mass=3.5
+P minecraft:obsidian mass=2.5
+P minecraft:crying_obsidian mass=2.5
+P minecraft:anvil mass=5
+P minecraft:chipped_anvil mass=5
+P minecraft:damaged_anvil mass=5

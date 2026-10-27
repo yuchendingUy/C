@@ -55,13 +55,7 @@ static void fill_cube(void *arg, mcc_region_world *w, mcc_sublevel *sl) {
     for (int32_t x = bx; x < bx + 3; x++)
         for (int32_t y = by; y < by + 3; y++)
             for (int32_t z = bz; z < bz + 3; z++) mcc_store_set(&sl->blocks, x, y, z, STONE);
-    /* 子世界存储先建区块再写方块 */
-    int32_t mn[3] = { bx, by, bz }, mx[3] = { bx + 2, by + 2, bz + 2 };
-    double com[3] = { bx + 1.5, by + 1.5, bz + 1.5 };
-    phys_body_set_center_of_mass(w->phys, sl->id, com);
-    phys_body_set_local_bounds(w->phys, sl->id, mn, mx);
-    double I = 27.0 * 18.0 / 12.0, inertia[9] = { I, 0, 0, 0, I, 0, 0, 0, I };
-    phys_body_set_mass(w->phys, sl->id, 27.0, inertia);
+    (void)w; /* 质心、包围盒、质量由世界层开启的质量追踪自动算出 */
 }
 
 /* 子世界存储里要有区块才能写方块：生成前先放好空区块 */

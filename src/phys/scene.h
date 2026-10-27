@@ -23,6 +23,7 @@
 #include "../core/hmap.h"
 #include "../world/chunk.h"
 #include "colliders.h"
+#include "mass.h"
 #include <box3d/box3d.h>
 
 #define PHYS_CELL_SHIFT 8            /* 地形格 256 方块 */
@@ -43,7 +44,8 @@ typedef struct phys_body {
     bool has_com;
     double com[3];               /* 质心（地块坐标） */
     mcc_chunk_store *blocks;     /* 子世界自己的方块（不归物理所有） */
-    mcc_store_listener listener; /* 方块变化时唤醒本刚体 */
+    mcc_store_listener listener; /* 方块变化时唤醒本刚体、更新质量追踪 */
+    phys_mass_tracker *mass;     /* 自动质量追踪，NULL 表示由调用方手动设置质心/包围盒/质量 */
     bool has_fake_vel;           /* 运动学移动结构的"假速度"，用于带动接触物体 */
     b3Vec3 fake_lin, fake_ang;   /* 刚体局部系 */
     bool kinematic;
@@ -102,6 +104,9 @@ bool phys_scene_next_body(phys_scene *s, uint32_t *it, phys_body **out);
 /* blocks：子世界的方块存储（地块坐标），须在 phys_sublevel_remove 之后才能释放 */
 bool phys_sublevel_create(phys_scene *s, int32_t id, const double pose[7], mcc_chunk_store *blocks);
 void phys_sublevel_remove(phys_scene *s, int32_t id);
+/* 开启自动质量追踪：扫描子世界方块算出质心、包围盒、质量、转动惯量，之后随方块增删自动更新。
+ * 更新在每刻开始（phys_scene_tick）时应用；质心移动时同步平移刚体，方块在世界里的位置不变 */
+void phys_body_track_mass(phys_scene *s, int32_t id);
 /* 区域合并/拆分时把刚体搬到另一个场景（保留位姿、速度、质量、休眠状态） */
 bool phys_body_migrate(phys_scene *src, phys_scene *dst, int32_t id);
 size_t phys_scene_body_count(phys_scene *s);

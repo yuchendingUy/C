@@ -113,12 +113,93 @@ static void scenario(double ox, double oz, const char *name) {
     mcc_store_free(&world);
 }
 
+/* 方块 (x, y, z)（地块坐标）中心在世界里的位置 */
+static void block_world(phys_scene *s, int32_t id, int32_t x, int32_t y, int32_t z, double out[3]) {
+    phys_body *b = phys_body_get(s, id);
+    b3WorldTransform xf = b3Body_GetTransform(b->body);
+    b3Vec3 l = { (float)(x + 0.5 - b->com[0]), (float)(y + 0.5 - b->com[1]), (float)(z + 0.5 - b->com[2]) };
+    b3Pos w = b3TransformWorldPoint(xf, l);
+    out[0] = w.x; out[1] = w.y; out[2] = w.z;
+}
+
+/* L 形：3×1×3 底板 + 一根 1×3×1 柱子立在角上 */
+typedef struct { int32_t bx, by, bz; } l_ctx;
+static mcc_state_t l_shape(int32_t x, int32_t y, int32_t z, void *p) {
+    l_ctx *c = p;
+    int32_t lx = x - c->bx, ly = y - c->by, lz = z - c->bz;
+    if (lx < 0 || lz < 0 || ly < 0 || lx > 2 || lz > 2 || ly > 3) return 0;
+    if (ly == 0) return STONE;
+    return lx == 0 && lz == 0 ? STONE : 0;
+}
+
+static void mass_tracking(void) {
+    mcc_info("== 自动质量追踪");
+    mcc_chunk_store world;
+    mcc_store_init(&world, TEST_MIN_Y, TEST_HEIGHT);
+    terrain_ctx t = { 0, 0 };
+    load_terrain(&world, &t);
+    phys_scene_config cfg = { { 0, -9.81, 0 }, 0.1 };
+    phys_scene *s = phys_scene_create(&cfg, &world);
+
+    mcc_chunk_store cube_st, l_st;
+    cube_ctx c = { 20000000, 64, 20000000 };
+    test_cube_store(&cube_st, &c);
+    double pose[7] = { 0, 70, 0, 0, 0, 0, 1 };
+    phys_sublevel_create(s, 1, pose, &cube_st);
+    phys_body_track_mass(s, 1);
+    phys_body *b = phys_body_get(s, 1);
+    b3MassData md = b3Body_GetMassData(b->body);
+    CHECK(fabs(md.mass - 27) < 1e-4 && fabs(b->com[0] - (c.bx + 1.5)) < 1e-9 && fabs(b->com[1] - 65.5) < 1e-9,
+          "3×3×3 石头：质量 %.3f、质心 (%.3f, %.3f) 与解析值一致", md.mass, b->com[0] - c.bx, b->com[1]);
+    CHECK(fabs(md.inertia.cx.x - 40.5) < 1e-3 && fabs(md.inertia.cy.x) < 1e-3 && b->bmin[0] == c.bx && b->bmax[1] == c.by + 2,
+          "转动惯量 %.3f 等于解析值 27×(9+9)/12 = 40.5，包围盒正确", md.inertia.cx.x);
+
+    run(s, 100);
+    double before[3], after[3];
+    block_world(s, 1, c.bx, c.by, c.bz, before);
+    /* 拆掉顶上一个角：质心移动，刚体原点跟着移动，剩下的方块不应跳动 */
+    mcc_store_set(&cube_st, c.bx + 2, c.by + 2, c.bz + 2, 0);
+    phys_scene_tick(s);
+    block_world(s, 1, c.bx, c.by, c.bz, after);
+    md = b3Body_GetMassData(b->body);
+    double jump = sqrt((after[0] - before[0]) * (after[0] - before[0]) + (after[1] - before[1]) * (after[1] - before[1]) +
+                       (after[2] - before[2]) * (after[2] - before[2]));
+    CHECK(fabs(md.mass - 26) < 1e-4 && fabs(b->com[0] - (c.bx + 1.5 - 1.0 / 26)) < 1e-6 && jump < 1e-4,
+          "拆掉一个角：质量 26，质心移动 %.4f，剩余方块世界位置变化 %.6f", 1.0 / 26, jump);
+    run(s, 60);
+    double v[3];
+    phys_body_get_linear_velocity(s, 1, v);
+    CHECK(fabs(v[1]) < 0.02, "质心更新后结构仍然稳定（竖直速度 %.4f）", v[1]);
+
+    /* L 形：只放方块、开追踪，落地后应静止 */
+    l_ctx lc = { 20000016, 64, 20000000 };
+    mcc_store_init(&l_st, TEST_MIN_Y, TEST_HEIGHT);
+    test_fill(&l_st, l_shape, &lc, lc.bx >> 4, lc.bx >> 4, lc.bz >> 4, lc.bz >> 4, 64, 67);
+    double pose2[7] = { 10, 70, 0, 0, 0, 0, 1 };
+    phys_sublevel_create(s, 2, pose2, &l_st);
+    phys_body_track_mass(s, 2);
+    run(s, 120);
+    double p2[7];
+    phys_body_get_pose(s, 2, p2);
+    phys_body *b2 = phys_body_get(s, 2);
+    /* 底板贴地（y=61），质心高度 = 61 + (质心 - 底板底面) */
+    double expect = 61.0 + (b2->com[1] - lc.by);
+    CHECK(fabs(p2[1] - expect) < 0.05 && speed(s, 2) < 0.02, "L 形（底板 9 块 + 柱子 3 块）自动算出质量 %.0f，落地后质心高度 %.4f ≈ %.4f 并静止",
+          (double)b3Body_GetMassData(b2->body).mass, p2[1], expect);
+
+    phys_scene_destroy(s);
+    mcc_store_free(&cube_st);
+    mcc_store_free(&l_st);
+    mcc_store_free(&world);
+}
+
 int main(void) {
     mcc_jobs_start(2);
     test_load_blocks();
 
     scenario(0, 0, "原点附近");
     scenario(10000000, 10000000, "x、z = 1000 万");
+    mass_tracking();
 
     test_free_blocks();
     mcc_ebr_drain();

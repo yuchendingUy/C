@@ -127,15 +127,26 @@ static void terrain_block_changed(void *ctx, int32_t x, int32_t y, int32_t z, mc
 static void terrain_chunk_added(void *ctx, mcc_chunk *c) { cell_acquire(ctx, c->cx, c->cz); }
 static void terrain_chunk_removed(void *ctx, mcc_chunk *c) { cell_release(ctx, c->cx, c->cz); }
 
-/* 子世界方块变化：结构变了，静止的刚体该重新动起来 */
+/* 子世界方块变化：结构变了，静止的刚体该重新动起来；质量追踪同步更新 */
 static void body_block_changed(void *ctx, int32_t x, int32_t y, int32_t z, mcc_state_t old, mcc_state_t now) {
-    (void)x; (void)y; (void)z; (void)old; (void)now;
-    b3Body_SetAwake(((phys_body *)ctx)->body, true);
+    phys_body *b = ctx;
+    if (b->mass) {
+        phys_mass_add(b->mass, x, y, z, old, -1);
+        phys_mass_add(b->mass, x, y, z, now, +1);
+    }
+    b3Body_SetAwake(b->body, true);
 }
 
-static void body_chunk_changed(void *ctx, mcc_chunk *c) {
-    (void)c;
-    b3Body_SetAwake(((phys_body *)ctx)->body, true);
+static void body_chunk_added(void *ctx, mcc_chunk *c) {
+    phys_body *b = ctx;
+    if (b->mass) phys_mass_add_chunk(b->mass, c, +1);
+    b3Body_SetAwake(b->body, true);
+}
+
+static void body_chunk_removed(void *ctx, mcc_chunk *c) {
+    phys_body *b = ctx;
+    if (b->mass) phys_mass_add_chunk(b->mass, c, -1);
+    b3Body_SetAwake(b->body, true);
 }
 
 /* ------------------------------------------------------------------ */
@@ -192,6 +203,10 @@ b3WorldId phys_scene_world(phys_scene *s) { return s->world; }
 
 static void body_free(phys_body *b) {
     if (b->blocks) mcc_store_unlisten(b->blocks, &b->listener);
+    if (b->mass) {
+        phys_mass_free(b->mass);
+        free(b->mass);
+    }
     free(b);
 }
 
@@ -263,7 +278,7 @@ bool phys_sublevel_create(phys_scene *s, int32_t id, const double pose[7], mcc_c
     b3Body_SetMassData(b->body, md);
 
     if (blocks) {
-        b->listener = (mcc_store_listener){ b, body_chunk_changed, body_chunk_changed, body_block_changed, NULL };
+        b->listener = (mcc_store_listener){ b, body_chunk_added, body_chunk_removed, body_block_changed, NULL };
         mcc_store_listen(blocks, &b->listener);
     }
     mcc_hmap_put(&s->bodies, (uint64_t)(uint32_t)id, b);
@@ -297,6 +312,60 @@ bool phys_body_migrate(phys_scene *src, phys_scene *dst, int32_t id) {
 
 size_t phys_scene_body_count(phys_scene *s) { return s->bodies.count; }
 
+static void set_mass_data(phys_body *b, double mass, const double inertia[9]) {
+    b3MassData md;
+    md.mass = (float)MCC_MAX(mass, 1e-3);
+    md.center = b3Vec3_zero;
+    md.inertia.cx = (b3Vec3){ (float)inertia[0], (float)inertia[1], (float)inertia[2] };
+    md.inertia.cy = (b3Vec3){ (float)inertia[3], (float)inertia[4], (float)inertia[5] };
+    md.inertia.cz = (b3Vec3){ (float)inertia[6], (float)inertia[7], (float)inertia[8] };
+    b3Body_SetMassData(b->body, md);
+}
+
+/* 把质量追踪的结果应用到刚体。刚体原点就是质心：质心在局部系里移动 d 时，
+ * 原点在世界里跟着移动 R·d，方块世界位置不变；新质心的线速度 = v + ω × (R·d) */
+static void apply_mass(phys_body *b) {
+    phys_mass_tracker *t = b->mass;
+    t->dirty = false;
+    double com[3], mass, inertia[9];
+    int32_t mn[3], mx[3];
+    if (!phys_mass_result(t, com, &mass, inertia) || !phys_mass_bounds(t, mn, mx)) return; /* 空结构：保持原样，由上层移除 */
+    if (b->has_com) {
+        b3Vec3 d = { (float)(com[0] - b->com[0]), (float)(com[1] - b->com[1]), (float)(com[2] - b->com[2]) };
+        if (d.x != 0 || d.y != 0 || d.z != 0) {
+            b3WorldTransform xf = b3Body_GetTransform(b->body);
+            b3Vec3 dw = b3RotateVector(xf.q, d);
+            b3Vec3 v = b3Body_GetLinearVelocity(b->body), w = b3Body_GetAngularVelocity(b->body);
+            xf.p.x += dw.x;
+            xf.p.y += dw.y;
+            xf.p.z += dw.z;
+            bool awake = b3Body_IsAwake(b->body);
+            b3Body_SetTransform(b->body, xf.p, xf.q);
+            b3Body_SetLinearVelocity(b->body, b3Add(v, b3Cross(w, dw)));
+            b3Body_SetAngularVelocity(b->body, w);
+            if (!awake) b3Body_SetAwake(b->body, false);
+        }
+    }
+    memcpy(b->com, com, sizeof b->com);
+    b->has_com = true;
+    memcpy(b->bmin, mn, sizeof b->bmin);
+    memcpy(b->bmax, mx, sizeof b->bmax);
+    b->has_bounds = true;
+    update_body_shape_bounds(b);
+    set_mass_data(b, mass, inertia);
+}
+
+void phys_body_track_mass(phys_scene *s, int32_t id) {
+    phys_body *b = body_req(s, id, "开启质量追踪");
+    if (b->mass || !b->blocks) return;
+    b->mass = mcc_xmalloc(sizeof *b->mass);
+    phys_mass_init(b->mass);
+    uint32_t it = 0;
+    void *v;
+    while (mcc_hmap_next(&b->blocks->chunks, &it, NULL, &v)) phys_mass_add_chunk(b->mass, v, +1);
+    apply_mass(b);
+}
+
 void phys_sublevel_remove(phys_scene *s, int32_t id) {
     phys_body *b = mcc_hmap_remove(&s->bodies, (uint64_t)(uint32_t)id);
     if (!b) return;
@@ -320,15 +389,8 @@ void phys_body_set_local_bounds(phys_scene *s, int32_t id, const int32_t min[3],
     update_body_shape_bounds(b);
 }
 void phys_body_set_mass(phys_scene *s, int32_t id, double mass, const double inertia[9]) {
-    phys_body *b = body_req(s, id, "设置质量");
     /* Sable 以列向量给出惯性张量；质心在刚体原点 */
-    b3MassData md;
-    md.mass = (float)mass;
-    md.center = b3Vec3_zero;
-    md.inertia.cx = (b3Vec3){ (float)inertia[0], (float)inertia[1], (float)inertia[2] };
-    md.inertia.cy = (b3Vec3){ (float)inertia[3], (float)inertia[4], (float)inertia[5] };
-    md.inertia.cz = (b3Vec3){ (float)inertia[6], (float)inertia[7], (float)inertia[8] };
-    b3Body_SetMassData(b->body, md);
+    set_mass_data(body_req(s, id, "设置质量"), mass, inertia);
 }
 
 void phys_body_get_pose(phys_scene *s, int32_t id, double out[7]) {
@@ -452,6 +514,11 @@ void phys_buoyancy_compute(phys_scene *s); /* buoyancy.c */
 
 void phys_scene_tick(phys_scene *s) {
     uint64_t t0 = mcc_nanotime();
+    /* 上一刻里方块有增删的结构：质心、包围盒、质量更新后再算浮力 */
+    uint32_t it = 0;
+    phys_body *b;
+    while (phys_scene_next_body(s, &it, &b))
+        if (b->mass && b->mass->dirty) apply_mass(b);
     /* 关节帧更新（joints.c）与绳索在后续移植中接入 */
     phys_buoyancy_compute(s);
     s->stat_tick_ns += mcc_nanotime() - t0;

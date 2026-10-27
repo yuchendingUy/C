@@ -73,6 +73,8 @@ void phys_colliders_free(void) {
     }
     mcc_vec_free(&g_colliders);
     g_finalized = false;
+    free(phys_state_mass);
+    phys_state_mass = NULL;
 }
 
 uint32_t phys_collider_count(void) { return (uint32_t)g_colliders.len; }

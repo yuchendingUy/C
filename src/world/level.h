@@ -70,7 +70,7 @@ void mcc_level_load_chunk(mcc_level *lv, mcc_chunk *c);
 /* 区域线程上移出存储、释放，再从区域器注销 */
 void mcc_level_unload_chunk(mcc_level *lv, int32_t cx, int32_t cz);
 
-/* 生成子世界：fill 在区域线程上调用，往子世界存储里填方块并设置质心/包围盒/质量。
+/* 生成子世界：fill 在区域线程上调用，往子世界存储里填方块；之后自动开启质量追踪。
  * 刚体放在 pose 处，按 pose 所在区块投递；该区块未加载时返回 -1，否则返回子世界编号 */
 typedef void (*mcc_sublevel_fill_fn)(void *arg, mcc_region_world *w, mcc_sublevel *sl);
 int32_t mcc_level_spawn_sublevel(mcc_level *lv, const double pose[7], mcc_sublevel_fill_fn fill, void *arg);

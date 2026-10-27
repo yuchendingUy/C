@@ -15,7 +15,7 @@ static mcc_state_t STONE, WATER;
 
 static void test_load_blocks(void) {
     if (!mcc_blocks_load(MCC_SOURCE_DIR "/data/blocks.txt")) mcc_log_fatal("载入方块注册表失败");
-    if (!phys_block_colliders_load(MCC_SOURCE_DIR "/data/shapes.txt")) mcc_log_fatal("载入碰撞形状失败");
+    if (!phys_block_colliders_load(MCC_SOURCE_DIR "/data/shapes.txt", MCC_SOURCE_DIR "/data/phys_props.txt")) mcc_log_fatal("载入碰撞形状失败");
     phys_colliders_finalize();
     STONE = mcc_block_default_state("stone");
     WATER = mcc_block_default_state("water");

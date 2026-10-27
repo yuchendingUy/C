@@ -260,6 +260,8 @@ static void task_spawn(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
     mcc_hmap_put(&w->sublevels, (uint64_t)(uint32_t)sl->id, sl);
     phys_sublevel_create(ensure_phys(w), sl->id, q->pose, &sl->blocks);
     if (q->fill) q->fill(q->arg, w, sl);
+    /* 质心、包围盒、质量由方块自动算出，之后随方块增删更新 */
+    phys_body_track_mass(w->phys, sl->id);
     free(q);
 }
 
