@@ -54,6 +54,10 @@ MCC_INLINE uint64_t mcc_hash64(uint64_t x) {
 
 uint64_t mcc_nanotime(void);
 
+#include <stdio.h>
+/* 读一行（含换行符），*line 按需扩大；文件结束返回 -1（各平台通用的 getline） */
+long mcc_getline(char **line, size_t *cap, FILE *f);
+
 /* 动态数组 */
 #define MCC_VEC(T) struct { T *data; size_t len, cap; }
 #define mcc_vec_push(v, x) do { \

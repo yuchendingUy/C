@@ -15,7 +15,11 @@ static void vlog(enum mcc_log_level lvl, const char *fmt, va_list ap) {
     char tbuf[32];
     time_t t = time(NULL);
     struct tm tm;
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
     localtime_r(&t, &tm);
+#endif
     strftime(tbuf, sizeof tbuf, "%H:%M:%S", &tm);
     pthread_mutex_lock(&g_lock);
     fprintf(stderr, "[%s %s] ", tbuf, NAMES[lvl]);

@@ -15,7 +15,11 @@
 #include <signal.h>
 #include <stdio.h>
 #include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 #define AREA 6 /* 地形 (2×AREA)² 个区块 */
 
@@ -24,14 +28,21 @@ static char g_data[1024], g_web[1024];
 /* 先找程序所在目录（发布包布局：mcc_debug、data/、viewer/），再找源码目录 */
 static void find_dirs(void) {
     char exe[900];
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+#ifdef _WIN32
+    long n = (long)GetModuleFileNameA(NULL, exe, sizeof exe - 1);
+#else
+    long n = (long)readlink("/proc/self/exe", exe, sizeof exe - 1);
+#endif
     if (n > 0) {
         exe[n] = 0;
-        char *slash = strrchr(exe, '/');
+        char *slash = strrchr(exe, '/'), *bs = strrchr(exe, '\\');
+        if (bs > slash) slash = bs;
         if (slash) *slash = 0;
         char probe[1100];
         snprintf(probe, sizeof probe, "%s/data/blocks.txt", exe);
-        if (access(probe, R_OK) == 0) {
+        FILE *f = fopen(probe, "r");
+        if (f) {
+            fclose(f);
             snprintf(g_data, sizeof g_data, "%s/data", exe);
             snprintf(g_web, sizeof g_web, "%s/viewer", exe);
             return;
@@ -133,11 +144,19 @@ static void on_spawn(void *ctx, double x, double z, int count) {
 int main(int argc, char **argv) {
     int port = argc > 1 ? atoi(argv[1]) : 8080;
     int tick_threads = argc > 2 ? atoi(argv[2]) : 2;
+#ifdef _WIN32
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    long cores = (long)si.dwNumberOfProcessors;
+#else
     long cores = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
     int job_threads = argc > 3 ? atoi(argv[3]) : (int)MCC_MAX(1, cores - tick_threads);
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
+#ifdef SIGPIPE
     signal(SIGPIPE, SIG_IGN);
+#endif
 
     find_dirs();
     char p1[1100], p2[1100], p3[1100];

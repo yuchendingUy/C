@@ -68,7 +68,7 @@ static bool load_props(const char *path, block_props *props) {
     size_t cap = 0;
     int lineno = 0, entries = 0;
     bool ok = true;
-    while (getline(&line, &cap, f) > 0) {
+    while (mcc_getline(&line, &cap, f) > 0) {
         lineno++;
         char *p = line, *t = tok(&p);
         if (!t || t[0] == '#') continue;
@@ -123,7 +123,7 @@ bool phys_block_colliders_load(const char *path, const char *props_path) {
     int lineno = 0;
     uint32_t blocks = 0;
     bool ok = true;
-    while (getline(&line, &len, f) > 0) {
+    while (mcc_getline(&line, &len, f) > 0) {
         lineno++;
         char *p = line, *t = tok(&p);
         if (!t || t[0] == '#') continue;

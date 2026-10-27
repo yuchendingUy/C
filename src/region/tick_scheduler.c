@@ -83,8 +83,18 @@ void mcc_tick_scheduler_on_active(mcc_tick_scheduler *s, mcc_region *r) {
 /* ---------- 推进线程 ---------- */
 
 static void abs_deadline(struct timespec *ts, uint64_t due_mono) {
+#ifdef _WIN32
+    /* Windows 的线程库按系统时钟算截止时间：把单调时钟的到期时间换算过去 */
+    uint64_t now = mcc_nanotime();
+    struct timespec rt;
+    clock_gettime(CLOCK_REALTIME, &rt);
+    uint64_t real = (uint64_t)rt.tv_sec * 1000000000ULL + (uint64_t)rt.tv_nsec + (due_mono > now ? due_mono - now : 0);
+    ts->tv_sec = (time_t)(real / 1000000000ULL);
+    ts->tv_nsec = (long)(real % 1000000000ULL);
+#else
     ts->tv_sec = (time_t)(due_mono / 1000000000ULL);
     ts->tv_nsec = (long)(due_mono % 1000000000ULL);
+#endif
 }
 
 static void *tick_thread(void *p) {
@@ -165,7 +175,9 @@ mcc_tick_scheduler *mcc_tick_scheduler_create(mcc_regionizer *rz, const mcc_tick
     pthread_mutex_init(&s->lock, NULL);
     pthread_condattr_t ca;
     pthread_condattr_init(&ca);
+#ifndef _WIN32
     pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
+#endif
     pthread_cond_init(&s->cond, &ca);
     pthread_condattr_destroy(&ca);
     return s;

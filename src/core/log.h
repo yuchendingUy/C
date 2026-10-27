@@ -4,8 +4,14 @@
 enum mcc_log_level { MCC_LOG_DEBUG, MCC_LOG_INFO, MCC_LOG_WARN, MCC_LOG_ERROR, MCC_LOG_FATAL };
 
 void mcc_log_set_level(enum mcc_log_level lvl);
-void mcc_log(enum mcc_log_level lvl, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-_Noreturn void mcc_log_fatal(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+/* mingw 下 printf 格式检查默认按微软运行库，项目用的是 mingw 自带的标准 printf */
+#if defined(__MINGW32__)
+#define MCC_PRINTF gnu_printf
+#else
+#define MCC_PRINTF printf
+#endif
+void mcc_log(enum mcc_log_level lvl, const char *fmt, ...) __attribute__((format(MCC_PRINTF, 2, 3)));
+_Noreturn void mcc_log_fatal(const char *fmt, ...) __attribute__((format(MCC_PRINTF, 1, 2)));
 
 #define mcc_debug(...) mcc_log(MCC_LOG_DEBUG, __VA_ARGS__)
 #define mcc_info(...)  mcc_log(MCC_LOG_INFO, __VA_ARGS__)

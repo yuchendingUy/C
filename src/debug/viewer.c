@@ -1,22 +1,53 @@
 #include "viewer.h"
 #include "../core/log.h"
-#include <arpa/inet.h>
 #include <errno.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <ctype.h>
+
+/* 网络：Linux 用 BSD 套接字，Windows 用 Winsock */
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+typedef SOCKET sock_t;
+#define sock_close closesocket
+#define sock_poll WSAPoll
+#define SEND_FLAGS 0
+static bool would_block(void) { return WSAGetLastError() == WSAEWOULDBLOCK; }
+static void set_nonblock(sock_t fd) { u_long one = 1; ioctlsocket(fd, FIONBIO, &one); }
+#else
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
-#include <pthread.h>
-#include <stdio.h>
 #include <sys/socket.h>
 #include <unistd.h>
+typedef int sock_t;
+#define sock_close close
+#define sock_poll poll
+#define SEND_FLAGS MSG_NOSIGNAL
+static bool would_block(void) { return errno == EAGAIN || errno == EWOULDBLOCK; }
+static void set_nonblock(sock_t fd) { fcntl(fd, F_SETFL, O_NONBLOCK); }
+#endif
+
+/* 不区分大小写查找子串（Windows 没有 strcasestr） */
+static char *find_ci(const char *hay, const char *needle) {
+    size_t n = strlen(needle);
+    for (; *hay; hay++) {
+        size_t i = 0;
+        while (i < n && hay[i] && tolower((unsigned char)hay[i]) == tolower((unsigned char)needle[i])) i++;
+        if (i == n) return (char *)hay;
+    }
+    return NULL;
+}
 
 #define MAX_OUT (256u << 20) /* 发送缓冲超过 256MB 的客户端直接断开 */
 
 typedef MCC_VEC(uint8_t) bytes;
 
 typedef struct client {
-    int fd;
+    sock_t fd;
     uint32_t id;
     bool ws, close_after_flush, dead;
     uint8_t in[16384];
@@ -28,7 +59,7 @@ typedef struct client {
 
 struct mcc_viewer {
     mcc_level *lv;
-    int listen_fd;
+    sock_t listen_fd;
     pthread_t thread;
     _Atomic bool stop;
     pthread_mutex_t lock;
@@ -366,7 +397,7 @@ void mcc_viewer_post_tick(void *vp, mcc_region *r, mcc_region_world *w) {
 /* ------------------------------------------------------------------ */
 
 static void client_free(client *c) {
-    close(c->fd);
+    sock_close(c->fd);
     mcc_vec_free(&c->out);
     mcc_hmap_free(&c->known);
     free(c);
@@ -416,7 +447,7 @@ static void handle_http(mcc_viewer *v, client *c) {
     if (!end) return;
     char path[256] = "/";
     sscanf((char *)c->in, "GET %255s", path);
-    char *key = strcasestr((char *)c->in, "Sec-WebSocket-Key:");
+    char *key = find_ci((char *)c->in, "Sec-WebSocket-Key:");
     if (!key) {
         serve_file(v, c, path);
         c->inlen = 0;
@@ -501,14 +532,18 @@ static void *net_main(void *p) {
             mcc_vec_push(&fds, ((struct pollfd){ c->fd, ev, 0 }));
         }
         pthread_mutex_unlock(&v->lock);
-        poll(fds.data, (nfds_t)fds.len, 5);
+        sock_poll(fds.data, (unsigned)fds.len, 5);
 
         if (fds.data[0].revents & POLLIN) {
-            int fd = accept(v->listen_fd, NULL, NULL);
+            sock_t fd = accept(v->listen_fd, NULL, NULL);
+#ifdef _WIN32
+            if (fd != INVALID_SOCKET) {
+#else
             if (fd >= 0) {
-                fcntl(fd, F_SETFL, O_NONBLOCK);
+#endif
+                set_nonblock(fd);
                 int one = 1;
-                setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+                setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof one);
                 client *c = mcc_xcalloc(1, sizeof *c);
                 c->fd = fd;
                 mcc_hmap_init(&c->known, 64);
@@ -525,7 +560,7 @@ static void *net_main(void *p) {
             pthread_mutex_unlock(&v->lock);
             if (fds.data[i].revents & (POLLERR | POLLHUP)) c->dead = true;
             if (!c->dead && (fds.data[i].revents & POLLIN)) {
-                ssize_t n = recv(c->fd, c->in + c->inlen, sizeof c->in - 1 - c->inlen, 0);
+                long n = (long)recv(c->fd, (char *)c->in + c->inlen, (int)(sizeof c->in - 1 - c->inlen), 0);
                 if (n <= 0) c->dead = true;
                 else {
                     c->inlen += (size_t)n;
@@ -536,9 +571,9 @@ static void *net_main(void *p) {
             }
             pthread_mutex_lock(&v->lock);
             while (!c->dead && c->out.len > c->out_off) {
-                ssize_t n = send(c->fd, c->out.data + c->out_off, c->out.len - c->out_off, MSG_NOSIGNAL);
+                long n = (long)send(c->fd, (const char *)c->out.data + c->out_off, (int)(c->out.len - c->out_off), SEND_FLAGS);
                 if (n <= 0) {
-                    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+                    if (n < 0 && would_block()) break;
                     c->dead = true;
                     break;
                 }
@@ -586,16 +621,20 @@ mcc_viewer *mcc_viewer_start(mcc_level *lv, int port, const char *web_dir, mcc_v
     pthread_mutex_init(&v->lock, NULL);
     mcc_hmap_init(&v->region_clear, 16);
     build_colors(v);
+#ifdef _WIN32
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
     v->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     int one = 1;
-    setsockopt(v->listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    setsockopt(v->listen_fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof one);
     struct sockaddr_in a = { 0 };
     a.sin_family = AF_INET;
     a.sin_port = htons((uint16_t)port);
     a.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind(v->listen_fd, (struct sockaddr *)&a, sizeof a) < 0 || listen(v->listen_fd, 16) < 0)
         mcc_log_fatal("测试客户端服务：端口 %d 监听失败：%s", port, strerror(errno));
-    fcntl(v->listen_fd, F_SETFL, O_NONBLOCK);
+    set_nonblock(v->listen_fd);
     pthread_create(&v->thread, NULL, net_main, v);
     mcc_info("测试客户端：浏览器打开 http://<本机地址>:%d/", port);
     return v;
@@ -604,7 +643,7 @@ mcc_viewer *mcc_viewer_start(mcc_level *lv, int port, const char *web_dir, mcc_v
 void mcc_viewer_stop(mcc_viewer *v) {
     atomic_store(&v->stop, true);
     pthread_join(v->thread, NULL);
-    close(v->listen_fd);
+    sock_close(v->listen_fd);
     for (size_t i = 0; i < v->clients.len; i++) client_free(v->clients.data[i]);
     mcc_vec_free(&v->clients);
     mcc_vec_free(&v->chunks);

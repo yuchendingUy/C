@@ -11,6 +11,10 @@ option(MCC_TSAN "用线程竞争检测器编译" OFF)
 option(MCC_ASAN "用地址检测器编译" OFF)
 
 add_compile_definitions(_GNU_SOURCE)
+if(MINGW)
+    # mingw 默认的 msvcrt printf 不支持 %zu 等格式
+    add_compile_definitions(__USE_MINGW_ANSI_STDIO=1)
+endif()
 add_compile_options(-Wall -Wextra -Wno-misleading-indentation)
 set(CMAKE_C_FLAGS_RELEASE "-O3 -march=native -g")
 if(MCC_TSAN)
@@ -41,6 +45,9 @@ target_link_libraries(mcc_core PUBLIC box3d Threads::Threads m)
 # 带简易测试客户端（浏览器）的调试服务端
 add_executable(mcc_debug src/debug/main.c src/debug/viewer.c)
 target_link_libraries(mcc_debug mcc_core)
+if(WIN32)
+    target_link_libraries(mcc_debug ws2_32)
+endif()
 target_compile_definitions(mcc_debug PRIVATE MCC_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 enable_testing()
