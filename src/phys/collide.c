@@ -96,7 +96,18 @@ static bool cell_owns(const phys_cell *c, int32_t x, int32_t z) {
 
 /* ---------------- 线程局部缓冲 ---------------- */
 
-typedef struct { int32_t s[3], d[3]; } block_pair;           /* static 侧方块、遍历侧方块 */
+typedef struct { int32_t s[3], d[3]; } block_pair;           /* static 侧方块、遍历侧方块（浮力按 6 个 int32 读，布局别动） */
+typedef struct {
+    const phys_collider *colS, *colD;
+    uint8_t stS, stD;            /* 邻居状态，配对时已算好 */
+} pair_meta;
+/* 一次回调内的方块缓存：被查询侧的同一个方块会和遍历侧很多方块配对，碰撞体与邻居状态只算一次 */
+typedef struct {
+    int32_t x, y, z;
+    uint32_t gen;
+    const phys_collider *col;
+    uint8_t st;
+} memo_ent;
 typedef struct {
     b3Vec3 normal;
     b3Vec3 point;
@@ -111,6 +122,9 @@ typedef struct {
 
 typedef struct scratch {
     MCC_VEC(block_pair) pairs;
+    MCC_VEC(pair_meta) meta;
+    memo_ent *memo;
+    uint32_t memo_cap, memo_used, memo_gen;
     mcc_i32vec hits;
     MCC_VEC(raw_point) points;
     MCC_VEC(uint16_t) point_cluster;
@@ -121,6 +135,57 @@ typedef struct scratch {
 } scratch;
 
 static _Thread_local scratch t_s;
+
+/* ---------------- 方块缓存与配对规则 ---------------- */
+
+/* 碰撞体：流体、空碰撞箱都当作没有 */
+static const phys_collider *solid_collider(vside *v, int32_t x, int32_t y, int32_t z) {
+    const phys_collider *c = phys_collider_get(mcc_state_collider(side_state(v, x, y, z)));
+    return c && !c->fluid && c->nboxes ? c : NULL;
+}
+
+static void memo_begin(scratch *sc) {
+    if (!sc->memo) {
+        sc->memo_cap = 1024;
+        sc->memo = mcc_xcalloc(sc->memo_cap, sizeof *sc->memo);
+    }
+    if (++sc->memo_gen == 0) {
+        memset(sc->memo, 0, sc->memo_cap * sizeof *sc->memo);
+        sc->memo_gen = 1;
+    }
+    sc->memo_used = 0;
+}
+
+static const memo_ent *memo_get(scratch *sc, vside *v, int32_t x, int32_t y, int32_t z) {
+    if (sc->memo_used * 2 >= sc->memo_cap) { /* 太满：换一张两倍大的空表（缓存丢了也只是重算） */
+        free(sc->memo);
+        sc->memo_cap *= 2;
+        sc->memo = mcc_xcalloc(sc->memo_cap, sizeof *sc->memo);
+        sc->memo_gen = 1;
+        sc->memo_used = 0;
+    }
+    uint32_t mask = sc->memo_cap - 1;
+    uint32_t i = (uint32_t)mcc_hash64(((uint64_t)(uint32_t)x << 32) ^ ((uint64_t)(uint32_t)z << 12) ^ (uint32_t)y) & mask;
+    for (;; i = (i + 1) & mask) {
+        memo_ent *e = &sc->memo[i];
+        if (e->gen != sc->memo_gen) {
+            e->x = x; e->y = y; e->z = z;
+            e->gen = sc->memo_gen;
+            e->col = solid_collider(v, x, y, z);
+            e->st = e->col ? (uint8_t)side_neighborhood(v, x, y, z) : PHYS_VS_INTERIOR;
+            sc->memo_used++;
+            return e;
+        }
+        if (e->x == x && e->y == y && e->z == z) return e;
+    }
+}
+
+/* Sable can_ignore_collision（parry 体素对体素同一套规则）：
+ * 内部方块不碰；面只和角碰；棱和棱、棱和角碰；角和什么都碰 */
+MCC_INLINE bool can_ignore(uint32_t a, uint32_t b) {
+    return a == PHYS_VS_INTERIOR || b == PHYS_VS_INTERIOR || (a == PHYS_VS_FACE && b != PHYS_VS_CORNER) ||
+           (b == PHYS_VS_FACE && a != PHYS_VS_CORNER);
+}
 
 /* ---------------- 找方块对（find_collision_pairs / get_overlapping_nodes） ---------------- */
 
@@ -161,7 +226,7 @@ static bool overlapping(vside *o, const double pos[3], double dist, bool cancel_
 }
 
 typedef struct trav_ctx {
-    const vside *t;
+    vside *t;
     vside *o;
     b3Transform xf_to;
     float prediction;
@@ -180,9 +245,11 @@ static bool node_overlaps(trav_ctx *tc, double cx, double cy, double cz, double 
 
 /* t：被遍历的刚体；o：被查询的一侧。xf_to：t 局部系 → o 局部系。
  * 遍历 t 的外露实心方块（只读区段位图），逐层剪枝：区段 → 4³ 小块 → 方块 */
-size_t phys_find_pairs(const vside *t, vside *o, b3Transform xf_to, float prediction, bool liquid, scratch *sc) {
+size_t phys_find_pairs(vside *t, vside *o, b3Transform xf_to, float prediction, bool liquid, scratch *sc) {
     const phys_body *tb = t->body;
     sc->pairs.len = 0;
+    sc->meta.len = 0;
+    if (!liquid) memo_begin(sc);
     trav_ctx tc = { t, o, xf_to, prediction, liquid, sc };
     /* 根：整个包围盒的外接球，没有重叠直接返回（远离地面的结构、不在水里的浮力查询） */
     double ext = MCC_MAX(tb->bmax[0] - tb->bmin[0], MCC_MAX(tb->bmax[1] - tb->bmin[1], tb->bmax[2] - tb->bmin[2])) + 1;
@@ -219,11 +286,26 @@ size_t phys_find_pairs(const vside *t, vside *o, b3Transform xf_to, float predic
                                         if (d[0] < tb->bmin[0] || d[1] < tb->bmin[1] || d[2] < tb->bmin[2] ||
                                             d[0] > tb->bmax[0] || d[1] > tb->bmax[1] || d[2] > tb->bmax[2])
                                             continue;
+                                        /* 碰撞：遍历侧方块先判自身（没有碰撞箱、内部方块直接跳过），再按规则筛对方 */
+                                        const phys_collider *colD = NULL;
+                                        uint32_t stD = 0;
+                                        if (!liquid) {
+                                            colD = solid_collider(t, d[0], d[1], d[2]);
+                                            if (!colD) continue;
+                                            stD = side_neighborhood(t, d[0], d[1], d[2]);
+                                            if (stD == PHYS_VS_INTERIOR) continue;
+                                        }
                                         sc->hits.len = 0;
                                         node_overlaps(&tc, d[0] + 0.5, d[1] + 0.5, d[2] + 0.5, 0.5, false);
                                         for (size_t i = 0; i + 2 < sc->hits.len; i += 3) {
                                             block_pair p = { { sc->hits.data[i], sc->hits.data[i + 1], sc->hits.data[i + 2] },
                                                              { d[0], d[1], d[2] } };
+                                            if (!liquid) {
+                                                const memo_ent *e = memo_get(sc, o, p.s[0], p.s[1], p.s[2]);
+                                                if (!e->col || can_ignore(e->st, stD)) continue;
+                                                pair_meta m = { e->col, colD, e->st, (uint8_t)stD };
+                                                mcc_vec_push(&sc->meta, m);
+                                            }
                                             mcc_vec_push(&sc->pairs, p);
                                         }
                                     }
@@ -274,21 +356,10 @@ static uint32_t feature_hash(const int32_t s[3], int bs, const int32_t d[3], int
 
 /* 一对方块的所有碰撞箱接触，结果追加到 sc->points（A 局部系），并记录所属簇 */
 static void add_point(scratch *sc, b3Vec3 n, b3Vec3 p, float sep, uint32_t feat, float friction, float restitution);
+extern _Atomic uint64_t g_prof[8];
 
-static void collide_block_pair(const pair_ctx *pc, const block_pair *bp, scratch *sc) {
-    vside *S = pc->s_is_a ? pc->a : pc->b;
-    vside *D = pc->s_is_a ? pc->b : pc->a;
-    const phys_collider *colS = phys_collider_get(mcc_state_collider(side_state(S, bp->s[0], bp->s[1], bp->s[2])));
-    if (!colS || colS->fluid || !colS->nboxes) return;
-    const phys_collider *colD = phys_collider_get(mcc_state_collider(side_state(D, bp->d[0], bp->d[1], bp->d[2])));
-    if (!colD || colD->fluid || !colD->nboxes) return;
-    uint32_t stS = side_neighborhood(S, bp->s[0], bp->s[1], bp->s[2]);
-    uint32_t stD = side_neighborhood(D, bp->d[0], bp->d[1], bp->d[2]);
-    /* can_ignore_collision */
-    if ((stS == PHYS_VS_FACE && stD == PHYS_VS_FACE) || stS == PHYS_VS_INTERIOR || stD == PHYS_VS_INTERIOR ||
-        (stS == PHYS_VS_EDGE && stD == PHYS_VS_FACE) || (stS == PHYS_VS_FACE && stD == PHYS_VS_EDGE))
-        return;
-
+static void collide_block_pair(const pair_ctx *pc, const block_pair *bp, const pair_meta *pm, scratch *sc) {
+    const phys_collider *colS = pm->colS, *colD = pm->colD;
     const int32_t *blkA = pc->s_is_a ? bp->s : bp->d;
     const int32_t *blkB = pc->s_is_a ? bp->d : bp->s;
     const phys_collider *colA = pc->s_is_a ? colS : colD;
@@ -574,7 +645,7 @@ const b3VoxelManifold *phys_voxel_manifolds(const b3VoxelQuery *q_in, int *count
     uint64_t ta = stats ? mcc_nanotime() : 0;
     size_t np = phys_find_pairs(trav, other, xf_to, q->speculativeDistance, false, sc);
     uint64_t tb = stats ? mcc_nanotime() : 0;
-    for (size_t i = 0; i < np; i++) collide_block_pair(&pc, &sc->pairs.data[i], sc);
+    for (size_t i = 0; i < np; i++) collide_block_pair(&pc, &sc->pairs.data[i], &sc->meta.data[i], sc);
     uint64_t tc = stats ? mcc_nanotime() : 0;
     const b3VoxelManifold *res = emit(sc, count);
     if (stats) {
