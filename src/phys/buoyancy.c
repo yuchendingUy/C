@@ -83,6 +83,7 @@ void phys_buoyancy_compute(phys_scene *s) {
         c.com = c.xf.p;
         c.force = c.torque = b3Vec3_zero;
 
+        double gscale = phys_scene_gravity_scale(s);
         mcc_store_cursor cur;
         mcc_cursor_init(&cur, b->blocks);
         bool complex = (b->bmax[0] - b->bmin[0]) + (b->bmax[1] - b->bmin[1]) + (b->bmax[2] - b->bmin[2]) < 10;
@@ -110,10 +111,10 @@ void phys_buoyancy_compute(phys_scene *s) {
                 for (int j = 0; j < 8; j++) {
                     b3Vec3 sub = { local.x + ((j & 1) * 2 - 1) * 0.25f, local.y + (((j >> 1) & 1) * 2 - 1) * 0.25f,
                                    local.z + (((j >> 2) & 1) * 2 - 1) * 0.25f };
-                    do_float(&c, st, sub, 0.25, col->volume);
+                    do_float(&c, st, sub, 0.25, col->volume * gscale);
                 }
             } else {
-                do_float(&c, st, local, 0.5, col->volume);
+                do_float(&c, st, local, 0.5, col->volume * gscale);
             }
         }
         b->tick_force = c.force;

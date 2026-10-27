@@ -119,6 +119,10 @@ void phys_body_wake(phys_scene *s, int32_t id);
 void phys_body_add_velocities(phys_scene *s, int32_t id, const double lin[3], const double ang[3], bool wake);
 /* 在局部点（相对质心）施加局部冲量 */
 void phys_body_apply_impulse(phys_scene *s, int32_t id, const double local_point[3], const double local_impulse[3], bool wake);
+/* 在世界坐标点施加世界坐标冲量（并唤醒） */
+void phys_body_apply_world_impulse(phys_scene *s, int32_t id, const double point[3], const double impulse[3]);
+/* 重力大小相对 9.81 的倍数（浮力按它放大，重力变了物体照样能浮起来） */
+double phys_scene_gravity_scale(phys_scene *s);
 void phys_body_apply_impulse_torque(phys_scene *s, int32_t id, const double local_impulse[3], const double local_torque[3], bool wake);
 void phys_body_get_linear_velocity(phys_scene *s, int32_t id, double out[3]);
 void phys_body_get_angular_velocity(phys_scene *s, int32_t id, double out[3]);

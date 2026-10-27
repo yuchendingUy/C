@@ -10,6 +10,7 @@
   #ui { position: fixed; left: 10px; top: 10px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   #ui button { font-size: 16px; padding: 8px 14px; border: 0; border-radius: 6px; background: #1f2a37; color: #fff; }
   #ui button:active { background: #3b4b5f; }
+  #ui button.on { background: #c0392b; }
   #status { position: fixed; left: 10px; bottom: 10px; color: #fff; background: rgba(0,0,0,.45);
             padding: 6px 10px; border-radius: 6px; font: 13px ui-monospace, monospace; white-space: pre; }
 </style>
@@ -20,6 +21,7 @@
   <button data-n="20">召唤 20 个</button>
   <button data-n="100">召唤 100 个</button>
   <button id="clear">清空</button>
+  <button id="hit">拍打模式：关</button>
 </div>
 <div id="status">连接中…</div>
 <script type="module">
@@ -55,7 +57,45 @@ renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
 renderer.domElement.addEventListener('pointerdown', e => { pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, b: e.button }); renderer.domElement.setPointerCapture(e.pointerId); });
 renderer.domElement.addEventListener('pointerup', e => { pointers.delete(e.pointerId); pinchDist = 0; });
 renderer.domElement.addEventListener('pointercancel', e => { pointers.delete(e.pointerId); pinchDist = 0; });
+/* 拍打模式：鼠标划过 / 手指拖过结构时，按划动方向和速度给它一个冲量 */
+let hitMode = false;
+const hitBtn = document.getElementById('hit');
+hitBtn.onclick = () => { hitMode = !hitMode; hitBtn.textContent = `拍打模式：${hitMode ? '开' : '关'}`; hitBtn.classList.toggle('on', hitMode); };
+const raycaster = new THREE.Raycaster(), ndc = new THREE.Vector2();
+const lastHit = new Map();               // 结构编号 → 上次拍打的时间（同一个结构 120ms 内只拍一次）
+let swipe = null;                        // 上一次指针位置与时间
+function trySwipe(e) {
+  const now = performance.now();
+  if (!swipe || now - swipe.t > 100) { swipe = { x: e.clientX, y: e.clientY, t: now }; return; }
+  const dt = Math.max(1, now - swipe.t) / 1000, dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
+  swipe = { x: e.clientX, y: e.clientY, t: now };
+  if (Math.hypot(dx, dy) < 2) return;
+  ndc.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  const meshes = [];
+  for (const b of bodies.values()) if (b.group.visible) meshes.push(b.inner.children[0]);
+  const hit = raycaster.intersectObjects(meshes, false)[0];
+  if (!hit) return;
+  const id = hit.object.userData.id;
+  if (now - (lastHit.get(id) || 0) < 120) return;
+  lastHit.set(id, now);
+  // 屏幕像素 → 命中点处的世界距离，得到划动的世界速度；再往上抬一点让它飞起来
+  const perPx = 2 * hit.distance * Math.tan(camera.fov * Math.PI / 360) / innerHeight;
+  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+  const v = right.multiplyScalar(dx * perPx / dt).addScaledVector(up, -dy * perPx / dt);
+  v.y += v.length() * 0.3;
+  const p = hit.point;
+  send(`push ${id} ${p.x.toFixed(3)} ${p.y.toFixed(3)} ${p.z.toFixed(3)} ${v.x.toFixed(2)} ${v.y.toFixed(2)} ${v.z.toFixed(2)}`);
+}
 renderer.domElement.addEventListener('pointermove', e => {
+  // 拍打模式下：鼠标悬停划过、或左键/单指拖动 = 拍打
+  if (hitMode && pointers.size <= 1 && (!pointers.has(e.pointerId) ? e.pointerType === 'mouse' : pointers.get(e.pointerId).b === 0)) {
+    trySwipe(e);
+    const p = pointers.get(e.pointerId);
+    if (p) { p.x = e.clientX; p.y = e.clientY; }
+    return;
+  }
   const p = pointers.get(e.pointerId);
   if (!p) return;
   const dx = e.clientX - p.x, dy = e.clientY - p.y;
@@ -128,17 +168,29 @@ function chunkMesh(list, water) {
 
 /* ---------------- 结构：插值缓冲 ---------------- */
 /* 服务端每刻（50ms）只发正在动的结构，每条带服务端时间。
- * 渲染时间 = 估计的服务端当前时间 - DELAY，在前后两个采样之间插值：位置线性、旋转球面插值。
+ * 渲染时钟按本地帧时间连续前进，只做小幅修正去追"估计的服务端当前时间 - DELAY"，
+ * 网络抖动不会让画面跳；在前后两个采样之间插值：位置线性、旋转球面插值。
  * 不外推：采样用完（结构睡着了）就停在最后一个位置。 */
-const DELAY = 100;
-let clockOffset = null;          // 服务端时间 - 本地时间
+const DELAY = 120;
+let latestT = null, latestRecv = 0;  // 收到过的最新服务端时间与它的到达时刻
+let renderClock = null, lastFrame = 0;
+function advanceClock(now) {
+  if (latestT === null) return null;
+  const target = latestT + (now - latestRecv) - DELAY;
+  if (renderClock === null || Math.abs(target - renderClock) > 400) renderClock = target;
+  else renderClock += (now - lastFrame) + (target - renderClock) * 0.02;
+  lastFrame = now;
+  return renderClock;
+}
 const bodies = new Map();        // id → { group, inner, samples: [{t, p, q, com}] }
 let nBlocks = 0;
 
 function addShape(id, blocks) {
   removeBody(id);
   const group = new THREE.Group(), inner = new THREE.Group();
-  inner.add(instanced(boxGeo, solidMat, blocks));
+  const mesh = instanced(boxGeo, solidMat, blocks);
+  mesh.userData.id = id;
+  inner.add(mesh);
   group.add(inner);
   group.visible = false;         // 收到第一个位姿再显示
   scene.add(group);
@@ -216,9 +268,7 @@ function connect() {
       addShape(id, blocks);
     } else if (type === 3) {                   // 位姿批次
       const t = dv.getFloat64(1, true), n = dv.getUint32(9, true);
-      const off = t - performance.now();
-      // 取最大偏移 = 最早到达的那次网络延迟；慢慢回落，跟上两边时钟的漂移
-      clockOffset = clockOffset === null ? off : Math.max(off, clockOffset - 0.5);
+      if (latestT === null || t > latestT) { latestT = t; latestRecv = performance.now(); }
       for (let i = 0, o = 13; i < n; i++, o += 56) {      // 每条 56 字节
         addSample(dv.getInt32(o, true), {
           t,
@@ -230,12 +280,18 @@ function connect() {
       posesIn += n;
     } else if (type === 4) {                   // 移除结构
       removeBody(dv.getInt32(1, true));
+    } else if (type === 5) {                   // 推进统计
+      const minTps = dv.getFloat32(1, true), avgTps = dv.getFloat32(5, true), ms = dv.getFloat32(9, true), maxMs = dv.getFloat32(13, true);
+      const n = dv.getUint32(17, true);
+      tpsText = n ? `TPS ${avgTps.toFixed(1)}（最低 ${minTps.toFixed(1)}）  每刻 ${ms.toFixed(2)}ms（最慢 ${maxMs.toFixed(2)}ms）  区域 ${n}`
+                  : 'TPS -（没有区域）';
     }
   };
   window.send = cmd => { if (ws.readyState === 1) ws.send(cmd); };
 }
 const status = document.getElementById('status');
-window.__mcc = { bodies, interpolate, get clockOffset() { return clockOffset; } };
+let tpsText = 'TPS -';
+window.__mcc = { bodies, interpolate, clock: () => ({ latestT, latestRecv, renderClock, now: performance.now() }) };
 connect();
 document.querySelectorAll('#ui button[data-n]').forEach(b =>
   b.onclick = () => send(`spawn ${target.x.toFixed(1)} ${target.z.toFixed(1)} ${b.dataset.n}`));
@@ -245,7 +301,8 @@ document.getElementById('clear').onclick = () => send('clear');
 let frames = 0, lastStat = performance.now();
 function frame(now) {
   requestAnimationFrame(frame);
-  if (clockOffset !== null) interpolate(now + clockOffset - DELAY);
+  const rt = advanceClock(now);
+  if (rt !== null) interpolate(rt);
   camera.position.set(target.x + dist * Math.cos(pitch) * Math.sin(yaw), target.y + dist * Math.sin(pitch),
                       target.z + dist * Math.cos(pitch) * Math.cos(yaw));
   camera.lookAt(target);
@@ -253,7 +310,7 @@ function frame(now) {
   frames++;
   if (now - lastStat > 1000) {
     const s = (now - lastStat) / 1000;
-    status.textContent = `结构 ${bodies.size} 个（${nBlocks} 方块）  ${(frames / s).toFixed(0)} 帧/秒\n` +
+    status.textContent = `${tpsText}\n结构 ${bodies.size} 个（${nBlocks} 方块）  ${(frames / s).toFixed(0)} 帧/秒\n` +
                          `位姿 ${(posesIn / s).toFixed(0)} 条/秒  下行 ${(bytesIn / s / 1024).toFixed(1)} KB/秒`;
     frames = 0; bytesIn = 0; posesIn = 0; lastStat = now;
   }

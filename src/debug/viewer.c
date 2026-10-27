@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <math.h>
 
 /* 网络：Linux 用 BSD 套接字，Windows 用 Winsock */
 #ifdef _WIN32
@@ -67,6 +68,8 @@ struct mcc_viewer {
     uint32_t next_client;
     MCC_VEC(uint64_t) chunks;
     mcc_hmap region_clear;      /* 区域编号 → 已处理的清空序号 + 1 */
+    mcc_hmap region_stats;      /* 区域编号 → region_stat*（推进统计） */
+    double stats_at;            /* 上次发统计的时间（毫秒） */
     _Atomic uint64_t clear_epoch;
     char web_dir[512];
     mcc_viewer_spawn_fn spawn;
@@ -191,6 +194,12 @@ static client *find_client(mcc_viewer *v, uint32_t id) {
         if (v->clients.data[i]->id == id && !v->clients.data[i]->dead) return v->clients.data[i];
     return NULL;
 }
+
+typedef struct region_stat {
+    uint32_t ticks;      /* 本统计周期内推进的刻数 */
+    float mspt;          /* 每刻耗时（指数平均，毫秒） */
+    double last;         /* 最近一次推进的时间（毫秒） */
+} region_stat;
 
 /* ------------------------------------------------------------------ */
 /* 地形快照（区块任务，区域线程上执行）                                 */
@@ -319,6 +328,18 @@ void mcc_viewer_post_tick(void *vp, mcc_region *r, mcc_region_world *w) {
     mcc_viewer *v = vp;
     double now_ms = mcc_nanotime() / 1e6;
 
+    /* 推进统计：网络线程每秒汇总一次 */
+    pthread_mutex_lock(&v->lock);
+    region_stat *rs = mcc_hmap_get(&v->region_stats, r->id);
+    if (!rs) {
+        rs = mcc_xcalloc(1, sizeof *rs);
+        mcc_hmap_put(&v->region_stats, r->id, rs);
+    }
+    rs->ticks++;
+    rs->mspt = (float)(r->tick_time_ema_ns / 1e6);
+    rs->last = now_ms;
+    pthread_mutex_unlock(&v->lock);
+
     /* 清空请求：本区域还没处理过的就把结构全删掉 */
     uint64_t epoch = atomic_load(&v->clear_epoch);
     pthread_mutex_lock(&v->lock);
@@ -376,7 +397,8 @@ void mcc_viewer_post_tick(void *vp, mcc_region *r, mcc_region_world *w) {
             shape.len = 0;
             encode_shape(v, sl, &shape);
             ws_send(c, shape.data, shape.len);
-            mcc_hmap_put(&c->known, (uint64_t)(uint32_t)sl->id, (void *)1);
+            /* 值不能是 1：哈希表用 (void *)1 标记已删除的槽 */
+            mcc_hmap_put(&c->known, (uint64_t)(uint32_t)sl->id, (void *)c);
             encode_pose(sl, pb, &extra);
             ne++;
         }
@@ -478,10 +500,35 @@ static void handle_http(mcc_viewer *v, client *c) {
     send_terrain(v, c->id);
 }
 
+typedef struct { int32_t id; double p[3], dv[3]; } push_req;
+
+/* 拍打：在拥有结构的区域线程上施加冲量 */
+static void task_push(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
+    (void)cx;
+    (void)cz;
+    push_req *q = arg;
+    if (r) {
+        mcc_region_world *w = r->data;
+        phys_body *b = w->phys ? phys_body_get(w->phys, q->id) : NULL;
+        if (b) {
+            double m = b3Body_GetMass(b->body), sp = sqrt(q->dv[0] * q->dv[0] + q->dv[1] * q->dv[1] + q->dv[2] * q->dv[2]);
+            double k = sp > 40 ? 40 / sp : 1; /* 速度变化上限 40 格/秒 */
+            double imp[3] = { q->dv[0] * m * k, q->dv[1] * m * k, q->dv[2] * m * k };
+            phys_body_apply_world_impulse(w->phys, q->id, q->p, imp);
+        }
+    }
+    free(q);
+}
+
 static void handle_command(mcc_viewer *v, const char *cmd) {
     double x, z;
     int n;
-    if (sscanf(cmd, "spawn %lf %lf %d", &x, &z, &n) == 3) {
+    push_req pr;
+    if (sscanf(cmd, "push %d %lf %lf %lf %lf %lf %lf", &pr.id, &pr.p[0], &pr.p[1], &pr.p[2], &pr.dv[0], &pr.dv[1], &pr.dv[2]) == 7) {
+        push_req *q = mcc_xmalloc(sizeof *q);
+        *q = pr;
+        if (!mcc_regionizer_queue_chunk_task(&v->lv->rz, (int32_t)floor(pr.p[0]) >> 4, (int32_t)floor(pr.p[2]) >> 4, task_push, q)) free(q);
+    } else if (sscanf(cmd, "spawn %lf %lf %d", &x, &z, &n) == 3) {
         if (n < 1) n = 1;
         if (n > 5000) n = 5000;
         v->spawn(v->ctx, x, z, n);
@@ -589,8 +636,40 @@ static void *net_main(void *p) {
             }
             pthread_mutex_unlock(&v->lock);
         }
-        /* 回收断开的连接 */
+        /* 每秒向所有客户端推送推进统计 */
+        double now = mcc_nanotime() / 1e6;
         pthread_mutex_lock(&v->lock);
+        if (now - v->stats_at >= 1000) {
+            double el = (now - v->stats_at) / 1000.0;
+            if (v->stats_at == 0) el = 1;
+            v->stats_at = now;
+            float min_tps = 0, sum_tps = 0, sum_ms = 0, max_ms = 0;
+            uint32_t nr = 0;
+            uint32_t it = 0;
+            uint64_t key;
+            void *val;
+            while (mcc_hmap_next(&v->region_stats, &it, &key, &val)) {
+                region_stat *rs = val;
+                if (now - rs->last > 3000) { /* 区域已合并或销毁 */
+                    mcc_hmap_remove(&v->region_stats, key);
+                    free(rs);
+                    continue;
+                }
+                float tps = (float)(rs->ticks / el);
+                rs->ticks = 0;
+                min_tps = nr ? MCC_MIN(min_tps, tps) : tps;
+                sum_tps += tps;
+                sum_ms += rs->mspt;
+                max_ms = MCC_MAX(max_ms, rs->mspt);
+                nr++;
+            }
+            uint8_t msg[21] = { 5 };
+            float vals[4] = { min_tps, nr ? sum_tps / nr : 0, nr ? sum_ms / nr : 0, max_ms };
+            memcpy(msg + 1, vals, 16);
+            memcpy(msg + 17, &nr, 4);
+            for (size_t i = 0; i < v->clients.len; i++) ws_send(v->clients.data[i], msg, sizeof msg);
+        }
+        /* 回收断开的连接 */
         size_t w = 0;
         for (size_t i = 0; i < v->clients.len; i++) {
             client *c = v->clients.data[i];
@@ -620,6 +699,7 @@ mcc_viewer *mcc_viewer_start(mcc_level *lv, int port, const char *web_dir, mcc_v
     snprintf(v->web_dir, sizeof v->web_dir, "%s", web_dir);
     pthread_mutex_init(&v->lock, NULL);
     mcc_hmap_init(&v->region_clear, 16);
+    mcc_hmap_init(&v->region_stats, 16);
     build_colors(v);
 #ifdef _WIN32
     WSADATA wsa;
@@ -648,6 +728,12 @@ void mcc_viewer_stop(mcc_viewer *v) {
     mcc_vec_free(&v->clients);
     mcc_vec_free(&v->chunks);
     mcc_hmap_free(&v->region_clear);
+    {
+        uint32_t it = 0;
+        void *val;
+        while (mcc_hmap_next(&v->region_stats, &it, NULL, &val)) free(val);
+        mcc_hmap_free(&v->region_stats);
+    }
     free(v->colors);
     pthread_mutex_destroy(&v->lock);
     free(v);

@@ -11,7 +11,9 @@
  *   2 结构形状  i32 id, u32 n, n × { i16 x, y, z, u8 r, g, b }   （相对地块原点）
  *   3 位姿批次  f64 服务端毫秒, u32 n, n × { i32 id, f64 px, py, pz, f32 qx, qy, qz, qw, f32 质心 x, y, z }
  *   4 移除结构  i32 id
- * 命令（文本）：spawn <x> <z> <数量> | clear
+ *   5 推进统计  f32 最低 TPS, f32 平均 TPS, f32 平均每刻毫秒, f32 最慢区域每刻毫秒, u32 区域数（每秒一次）
+ * 命令（文本）：spawn <x> <z> <数量> | clear | push <id> <x> <y> <z> <vx> <vy> <vz>
+ *   push：在世界点 (x,y,z) 给结构一个冲量，使其速度改变 (vx,vy,vz) 格/秒（按质量折算）
  */
 #ifndef MCC_VIEWER_H
 #define MCC_VIEWER_H

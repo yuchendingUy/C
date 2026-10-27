@@ -451,6 +451,18 @@ void phys_body_apply_impulse(phys_scene *s, int32_t id, const double local_point
     b3Body_ApplyLinearImpulse(b->body, impulse, point, wake);
 }
 
+void phys_body_apply_world_impulse(phys_scene *s, int32_t id, const double point[3], const double impulse[3]) {
+    phys_body *b = phys_body_get(s, id);
+    if (!b) return;
+    b3Body_ApplyLinearImpulse(b->body, (b3Vec3){ (float)impulse[0], (float)impulse[1], (float)impulse[2] },
+                              (b3Pos){ point[0], point[1], point[2] }, true);
+}
+
+double phys_scene_gravity_scale(phys_scene *s) {
+    const double *g = s->cfg.gravity;
+    return sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]) / 9.81;
+}
+
 void phys_body_apply_impulse_torque(phys_scene *s, int32_t id, const double local_impulse[3], const double local_torque[3], bool wake) {
     phys_body *b = body_req(s, id, "施加冲量与角冲量");
     if (!wake && !b3Body_IsAwake(b->body)) return;
