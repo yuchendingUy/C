@@ -14,11 +14,12 @@ struct phys_scene {
     b3WorldId world;
     phys_scene_config cfg;
     phys_tuning tuning;
-    mcc_hmap sections;       /* 区段键 → phys_section*（地形区段 + 本场景子世界的地块区段） */
-    mcc_hmap octree_chunks;  /* 64³ 键 → phys_octree_chunk*（仅地形） */
+    mcc_chunk_store *terrain;            /* 地形方块（不归物理所有） */
+    mcc_store_listener terrain_listener;
     mcc_hmap bodies;         /* 编号 → phys_body* */
     mcc_hmap cells;          /* 地形格键 → phys_cell* */
     MCC_VEC(phys_collision) collisions;
+    MCC_VEC(b3BodyId) wake;              /* 方块变化时收集待唤醒的刚体 */
     b3ContactData *contact_buf;
     int contact_cap;
     _Atomic uint64_t stat_manifolds, stat_pairs, stat_collide_ns;
@@ -92,49 +93,57 @@ static phys_body *body_req(phys_scene *s, int32_t id, const char *what) {
     return b;
 }
 
-static phys_section *section_get(phys_scene *s, int32_t sx, int32_t sy, int32_t sz) {
-    return mcc_hmap_get(&s->sections, phys_key3(sx, sy, sz));
+mcc_chunk_store *phys_scene_terrain(phys_scene *s) { return s->terrain; }
+
+static void cell_acquire(phys_scene *s, int32_t cx, int32_t cz);
+static void cell_release(phys_scene *s, int32_t cx, int32_t cz);
+
+/* ------------------------------------------------------------------ */
+/* 方块存储事件                                                        */
+/* ------------------------------------------------------------------ */
+
+static bool collect_body(b3ShapeId shape, void *ctx) {
+    phys_scene *s = ctx;
+    void *u = b3Shape_GetUserData(shape);
+    if (u && *(int *)u == PHYS_KIND_BODY) mcc_vec_push(&s->wake, ((phys_body *)u)->body);
+    return true;
 }
 
-uint32_t phys_scene_cell_at(phys_scene *s, const phys_body *b, int32_t x, int32_t y, int32_t z) {
-    const mcc_hmap *map = (b && b->own_chunks) ? b->own_chunks : &s->sections;
-    const phys_section *sec = mcc_hmap_get(map, phys_key3(x >> 4, y >> 4, z >> 4));
-    if (!sec) return 0;
-    return sec->cells[(x & 15) + ((z & 15) << 4) + ((y & 15) << 8)];
+/* 地形方块变化：唤醒包围盒碰到该方块的刚体（查询期间不改动世界，先收集再唤醒） */
+static void terrain_block_changed(void *ctx, int32_t x, int32_t y, int32_t z, mcc_state_t old, mcc_state_t now) {
+    phys_scene *s = ctx;
+    (void)old;
+    (void)now;
+    /* 宽相包围盒是单精度世界坐标，远离原点时有舍入，多留 2 格余量 */
+    b3AABB box = { { (float)x - 2.0f, (float)y - 2.0f, (float)z - 2.0f }, { (float)x + 3.0f, (float)y + 3.0f, (float)z + 3.0f } };
+    s->wake.len = 0;
+    b3World_OverlapAABB(s->world, box, b3DefaultQueryFilter(), collect_body, s);
+    for (size_t i = 0; i < s->wake.len; i++) b3Body_SetAwake(s->wake.data[i], true);
 }
 
-const mcc_hmap *phys_scene_sections(phys_scene *s) { return &s->sections; }
+static void terrain_chunk_added(void *ctx, mcc_chunk *c) { cell_acquire(ctx, c->cx, c->cz); }
+static void terrain_chunk_removed(void *ctx, mcc_chunk *c) { cell_release(ctx, c->cx, c->cz); }
 
-const phys_octree_chunk *phys_scene_octree_chunk(phys_scene *s, int32_t ox, int32_t oy, int32_t oz) {
-    return mcc_hmap_get(&s->octree_chunks, phys_key3(ox, oy, oz));
+/* 子世界方块变化：结构变了，静止的刚体该重新动起来 */
+static void body_block_changed(void *ctx, int32_t x, int32_t y, int32_t z, mcc_state_t old, mcc_state_t now) {
+    (void)x; (void)y; (void)z; (void)old; (void)now;
+    b3Body_SetAwake(((phys_body *)ctx)->body, true);
 }
 
-/* 对应 insert_block_octree：内部块、空块、无碰撞箱的块不进八叉树 */
-static bool cell_is_solid(uint32_t cell) {
-    uint32_t cid = phys_cell_collider(cell);
-    uint32_t st = phys_cell_state(cell);
-    if (!cid || st == PHYS_VS_INTERIOR || st == PHYS_VS_EMPTY) return false;
-    const phys_collider *c = phys_collider_get(cid);
-    return c && c->nboxes > 0;
-}
-
-static void octree_put(phys_octree *t, uint32_t cell, bool remove, int x, int y, int z) {
-    bool solid = cell_is_solid(cell);
-    if (remove && !solid) phys_octree_insert(t, x, y, z, -1);
-    if (solid) phys_octree_insert(t, x, y, z, (int32_t)phys_cell_collider(cell));
+static void body_chunk_changed(void *ctx, mcc_chunk *c) {
+    (void)c;
+    b3Body_SetAwake(((phys_body *)ctx)->body, true);
 }
 
 /* ------------------------------------------------------------------ */
 /* 场景                                                                */
 /* ------------------------------------------------------------------ */
 
-phys_scene *phys_scene_create(const phys_scene_config *cfg) {
+phys_scene *phys_scene_create(const phys_scene_config *cfg, mcc_chunk_store *terrain) {
     phys_scene *s = mcc_xcalloc(1, sizeof *s);
     s->cfg = *cfg;
     /* Sable 默认：接触固有频率 30Hz、阻尼比 5；关节 550Hz、阻尼比 4 */
     s->tuning = (phys_tuning){ 30.0f, 5.0f, 4, 550.0f, 4.0f };
-    mcc_hmap_init(&s->sections, 256);
-    mcc_hmap_init(&s->octree_chunks, 64);
     mcc_hmap_init(&s->bodies, 16);
     mcc_hmap_init(&s->cells, 16);
 
@@ -154,6 +163,15 @@ phys_scene *phys_scene_create(const phys_scene_config *cfg) {
         def.workerCount = 1;
     }
     s->world = b3CreateWorld(&def);
+
+    s->terrain = terrain;
+    if (terrain) {
+        s->terrain_listener = (mcc_store_listener){ s, terrain_chunk_added, terrain_chunk_removed, terrain_block_changed, NULL };
+        mcc_store_listen(terrain, &s->terrain_listener);
+        uint32_t it = 0;
+        void *v;
+        while (mcc_hmap_next(&terrain->chunks, &it, NULL, &v)) cell_acquire(s, ((mcc_chunk *)v)->cx, ((mcc_chunk *)v)->cz);
+    }
     return s;
 }
 
@@ -166,38 +184,22 @@ void phys_scene_set_tuning(phys_scene *s, const phys_tuning *t) {
 b3WorldId phys_scene_world(phys_scene *s) { return s->world; }
 
 static void body_free(phys_body *b) {
-    if (b->has_octree) phys_octree_free(&b->octree);
-    if (b->own_chunks) {
-        uint32_t it = 0;
-        void *v;
-        while (mcc_hmap_next(b->own_chunks, &it, NULL, &v)) free(v);
-        mcc_hmap_free(b->own_chunks);
-        free(b->own_chunks);
-    }
+    if (b->blocks) mcc_store_unlisten(b->blocks, &b->listener);
     free(b);
 }
 
 void phys_scene_destroy(phys_scene *s) {
+    if (s->terrain) mcc_store_unlisten(s->terrain, &s->terrain_listener);
     b3DestroyWorld(s->world);
     uint32_t it = 0;
     void *v;
-    while (mcc_hmap_next(&s->sections, &it, NULL, &v)) free(v);
-    it = 0;
-    while (mcc_hmap_next(&s->octree_chunks, &it, NULL, &v)) {
-        phys_octree_chunk *oc = v;
-        phys_octree_free(&oc->solid);
-        phys_octree_free(&oc->liquid);
-        free(oc);
-    }
-    it = 0;
     while (mcc_hmap_next(&s->bodies, &it, NULL, &v)) body_free(v);
     it = 0;
     while (mcc_hmap_next(&s->cells, &it, NULL, &v)) free(v);
-    mcc_hmap_free(&s->sections);
-    mcc_hmap_free(&s->octree_chunks);
     mcc_hmap_free(&s->bodies);
     mcc_hmap_free(&s->cells);
     mcc_vec_free(&s->collisions);
+    mcc_vec_free(&s->wake);
     free(s->contact_buf);
     free(s);
 }
@@ -215,7 +217,7 @@ static void update_body_shape_bounds(phys_body *b) {
     b3Shape_SetVoxelBounds(b->shape, box);
 }
 
-bool phys_sublevel_create(phys_scene *s, int32_t id, const double pose[7]) {
+bool phys_sublevel_create(phys_scene *s, int32_t id, const double pose[7], mcc_chunk_store *blocks) {
     if (phys_body_get(s, id)) {
         mcc_error("物理场景：刚体 %d 已存在", id);
         return false;
@@ -224,6 +226,7 @@ bool phys_sublevel_create(phys_scene *s, int32_t id, const double pose[7]) {
     b->kind = PHYS_KIND_BODY;
     b->scene = s;
     b->id = id;
+    b->blocks = blocks;
 
     b3WorldTransform xf = pose_to_xf(pose);
     b3BodyDef bd = b3DefaultBodyDef();
@@ -246,6 +249,10 @@ bool phys_sublevel_create(phys_scene *s, int32_t id, const double pose[7]) {
     b3MassData md = { 1.0f, b3Vec3_zero, { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } } };
     b3Body_SetMassData(b->body, md);
 
+    if (blocks) {
+        b->listener = (mcc_store_listener){ b, body_chunk_changed, body_chunk_changed, body_block_changed, NULL };
+        mcc_store_listen(blocks, &b->listener);
+    }
     mcc_hmap_put(&s->bodies, (uint64_t)(uint32_t)id, b);
     return true;
 }
@@ -264,38 +271,14 @@ void phys_body_set_center_of_mass(phys_scene *s, int32_t id, const double com[3]
     update_body_shape_bounds(b);
 }
 
-/* 对应 ActiveLevelColliderInfo::set_local_bounds：包围盒变化时重建八叉树 */
+/* 对应 ActiveLevelColliderInfo::set_local_bounds。方块直接从子世界存储读，包围盒变化不需要重建任何结构 */
 void phys_body_set_local_bounds(phys_scene *s, int32_t id, const int32_t min[3], const int32_t max[3]) {
     phys_body *b = body_req(s, id, "设置局部包围盒");
-    bool changed = !b->has_bounds || memcmp(b->bmin, min, sizeof b->bmin) || memcmp(b->bmax, max, sizeof b->bmax);
     memcpy(b->bmin, min, sizeof b->bmin);
     memcpy(b->bmax, max, sizeof b->bmax);
     b->has_bounds = true;
-    if (changed) {
-        int32_t max_axis = MCC_MAX(max[0] - min[0], MCC_MAX(max[1] - min[1], max[2] - min[2])) + 1;
-        int log_size = 0;
-        while ((1 << log_size) < max_axis) log_size++;
-        if (b->has_octree) phys_octree_free(&b->octree);
-        phys_octree_init(&b->octree, log_size);
-        b->has_octree = true;
-        for (int32_t cx = min[0] >> 4; cx <= max[0] >> 4; cx++)
-            for (int32_t cy = min[1] >> 4; cy <= max[1] >> 4; cy++)
-                for (int32_t cz = min[2] >> 4; cz <= max[2] >> 4; cz++) {
-                    const mcc_hmap *map = b->own_chunks ? b->own_chunks : &s->sections;
-                    const phys_section *sec = mcc_hmap_get(map, phys_key3(cx, cy, cz));
-                    if (!sec) continue;
-                    for (int i = 0; i < PHYS_SECTION_CELLS; i++) {
-                        uint32_t cell = sec->cells[i];
-                        if (phys_cell_state(cell) == PHYS_VS_EMPTY) continue;
-                        int x = (cx << 4) + (i & 15), z = (cz << 4) + ((i >> 4) & 15), y = (cy << 4) + (i >> 8);
-                        if (x < min[0] || y < min[1] || z < min[2] || x > max[0] || y > max[1] || z > max[2]) continue;
-                        octree_put(&b->octree, cell, false, x - min[0], y - min[1], z - min[2]);
-                    }
-                }
-    }
     update_body_shape_bounds(b);
 }
-
 void phys_body_set_mass(phys_scene *s, int32_t id, double mass, const double inertia[9]) {
     phys_body *b = body_req(s, id, "设置质量");
     /* Sable 以列向量给出惯性张量；质心在刚体原点 */
@@ -369,17 +352,18 @@ void phys_body_get_angular_velocity(phys_scene *s, int32_t id, double out[3]) {
 /* 地形格                                                              */
 /* ------------------------------------------------------------------ */
 
-static void cell_update_bounds(phys_cell *c) {
+/* 地形格包围盒：水平覆盖整格，竖直覆盖存储的整个高度 */
+static void cell_update_bounds(phys_scene *s, phys_cell *c) {
     const float half = (float)(1 << (PHYS_CELL_SHIFT - 1));
     b3AABB box = {
-        { -half, (float)(c->min_sy * 16 - c->origin[1]), -half },
-        { half, (float)((c->max_sy + 1) * 16 - c->origin[1]), half },
+        { -half, (float)(s->terrain->min_sy * 16 - c->origin[1]), -half },
+        { half, (float)((s->terrain->min_sy + s->terrain->nsec) * 16 - c->origin[1]), half },
     };
     b3Shape_SetVoxelBounds(c->shape, box);
 }
 
-static void cell_acquire(phys_scene *s, int32_t sx, int32_t sy, int32_t sz) {
-    int32_t cx = floor_div(sx, PHYS_CELL_SHIFT - 4), cz = floor_div(sz, PHYS_CELL_SHIFT - 4);
+static void cell_acquire(phys_scene *s, int32_t chx, int32_t chz) {
+    int32_t cx = floor_div(chx, PHYS_CELL_SHIFT - 4), cz = floor_div(chz, PHYS_CELL_SHIFT - 4);
     uint64_t key = mcc_key2(cx, cz);
     phys_cell *c = mcc_hmap_get(&s->cells, key);
     if (!c) {
@@ -392,8 +376,6 @@ static void cell_acquire(phys_scene *s, int32_t sx, int32_t sy, int32_t sz) {
         c->origin[0] = (double)cx * size + size / 2;
         c->origin[1] = 0.0;
         c->origin[2] = (double)cz * size + size / 2;
-        c->min_sy = sy;
-        c->max_sy = sy;
         b3BodyDef bd = b3DefaultBodyDef();
         bd.type = b3_staticBody;
         bd.position = (b3Pos){ c->origin[0], c->origin[1], c->origin[2] };
@@ -405,138 +387,21 @@ static void cell_acquire(phys_scene *s, int32_t sx, int32_t sy, int32_t sz) {
         b3VoxelShape vs = { c, { { -1, -1, -1 }, { 1, 1, 1 } }, false };
         c->shape = b3CreateVoxelShape(c->body, &sd, &vs);
         mcc_hmap_put(&s->cells, key, c);
-        cell_update_bounds(c);
-    } else if (sy < c->min_sy || sy > c->max_sy) {
-        c->min_sy = MCC_MIN(c->min_sy, sy);
-        c->max_sy = MCC_MAX(c->max_sy, sy);
-        cell_update_bounds(c);
+        cell_update_bounds(s, c);
     }
-    c->sections++;
+    c->chunks++;
 }
 
-static void cell_release(phys_scene *s, int32_t sx, int32_t sz) {
-    int32_t cx = floor_div(sx, PHYS_CELL_SHIFT - 4), cz = floor_div(sz, PHYS_CELL_SHIFT - 4);
+static void cell_release(phys_scene *s, int32_t chx, int32_t chz) {
+    int32_t cx = floor_div(chx, PHYS_CELL_SHIFT - 4), cz = floor_div(chz, PHYS_CELL_SHIFT - 4);
     uint64_t key = mcc_key2(cx, cz);
     phys_cell *c = mcc_hmap_get(&s->cells, key);
     if (!c) return;
-    if (--c->sections <= 0) {
+    if (--c->chunks <= 0) {
         mcc_hmap_remove(&s->cells, key);
         b3DestroyBody(c->body);
         free(c);
     }
-}
-
-/* ------------------------------------------------------------------ */
-/* 区段与方块                                                          */
-/* ------------------------------------------------------------------ */
-
-static phys_octree_chunk *octree_chunk_req(phys_scene *s, int32_t ox, int32_t oy, int32_t oz) {
-    uint64_t key = phys_key3(ox, oy, oz);
-    phys_octree_chunk *oc = mcc_hmap_get(&s->octree_chunks, key);
-    if (!oc) {
-        oc = mcc_xmalloc(sizeof *oc);
-        phys_octree_init(&oc->solid, PHYS_OCTREE_CHUNK_SHIFT);
-        phys_octree_init(&oc->liquid, PHYS_OCTREE_CHUNK_SHIFT);
-        mcc_hmap_put(&s->octree_chunks, key, oc);
-    }
-    return oc;
-}
-
-static bool cell_is_fluid(uint32_t cell) {
-    const phys_collider *c = phys_collider_get(phys_cell_collider(cell));
-    return c && c->fluid;
-}
-
-/* 地形方块写入 64³ 八叉树：流体进液体树，其余进实体树（两棵树互斥更新） */
-static void terrain_octree_set(phys_scene *s, int32_t x, int32_t y, int32_t z, uint32_t cell, bool remove) {
-    const int32_t mask = (1 << PHYS_OCTREE_CHUNK_SHIFT) - 1;
-    phys_octree_chunk *oc = octree_chunk_req(s, x >> PHYS_OCTREE_CHUNK_SHIFT, y >> PHYS_OCTREE_CHUNK_SHIFT, z >> PHYS_OCTREE_CHUNK_SHIFT);
-    int lx = x & mask, ly = y & mask, lz = z & mask;
-    if (cell_is_fluid(cell)) {
-        octree_put(&oc->liquid, cell, remove, lx, ly, lz);
-        if (remove) phys_octree_insert(&oc->solid, lx, ly, lz, -1);
-    } else {
-        octree_put(&oc->solid, cell, remove, lx, ly, lz);
-        if (remove) phys_octree_insert(&oc->liquid, lx, ly, lz, -1);
-    }
-}
-
-void phys_section_add(phys_scene *s, int32_t sx, int32_t sy, int32_t sz, const uint32_t cells[4096], bool global, int32_t object_id) {
-    uint64_t key = phys_key3(sx, sy, sz);
-    phys_section *sec = mcc_hmap_get(&s->sections, key);
-    bool existed = sec != NULL;
-    if (!sec) {
-        sec = mcc_xmalloc(sizeof *sec);
-        mcc_hmap_put(&s->sections, key, sec);
-    }
-    memcpy(sec->cells, cells, sizeof sec->cells);
-
-    if (!global) {
-        if (object_id < 0) return;
-        phys_body *b = phys_body_get(s, object_id);
-        if (!b || !b->has_octree) return;
-        for (int i = 0; i < PHYS_SECTION_CELLS; i++) {
-            int x = (sx << 4) + (i & 15), z = (sz << 4) + ((i >> 4) & 15), y = (sy << 4) + (i >> 8);
-            if (x < b->bmin[0] || y < b->bmin[1] || z < b->bmin[2] || x > b->bmax[0] || y > b->bmax[1] || z > b->bmax[2]) continue;
-            octree_put(&b->octree, sec->cells[i], false, x - b->bmin[0], y - b->bmin[1], z - b->bmin[2]);
-        }
-        return;
-    }
-
-    if (!existed) cell_acquire(s, sx, sy, sz);
-    for (int i = 0; i < PHYS_SECTION_CELLS; i++) {
-        uint32_t cell = sec->cells[i];
-        if (!phys_cell_collider(cell) && !existed) continue; /* 新区段的空格不用写 */
-        int x = (sx << 4) + (i & 15), z = (sz << 4) + ((i >> 4) & 15), y = (sy << 4) + (i >> 8);
-        terrain_octree_set(s, x, y, z, cell, existed);
-    }
-}
-
-void phys_section_remove(phys_scene *s, int32_t sx, int32_t sy, int32_t sz, bool global) {
-    phys_section *sec = mcc_hmap_remove(&s->sections, phys_key3(sx, sy, sz));
-    if (!sec) return;
-    if (global) {
-        const int32_t oshift = PHYS_OCTREE_CHUNK_SHIFT;
-        uint64_t okey = phys_key3((sx << 4) >> oshift, (sy << 4) >> oshift, (sz << 4) >> oshift);
-        phys_octree_chunk *oc = mcc_hmap_get(&s->octree_chunks, okey);
-        if (oc) {
-            const int32_t mask = (1 << oshift) - 1;
-            for (int i = 0; i < PHYS_SECTION_CELLS; i++) {
-                int x = (sx << 4) + (i & 15), z = (sz << 4) + ((i >> 4) & 15), y = (sy << 4) + (i >> 8);
-                phys_octree_insert(&oc->solid, x & mask, y & mask, z & mask, -1);
-                phys_octree_insert(&oc->liquid, x & mask, y & mask, z & mask, -1);
-            }
-            if (phys_octree_is_empty(&oc->solid) && phys_octree_is_empty(&oc->liquid)) {
-                mcc_hmap_remove(&s->octree_chunks, okey);
-                phys_octree_free(&oc->solid);
-                phys_octree_free(&oc->liquid);
-                free(oc);
-            }
-        }
-        cell_release(s, sx, sz);
-    }
-    free(sec);
-}
-
-void phys_block_change(phys_scene *s, int32_t x, int32_t y, int32_t z, uint32_t cell) {
-    phys_section *sec = section_get(s, x >> 4, y >> 4, z >> 4);
-    if (!sec) return;
-    sec->cells[(x & 15) + ((z & 15) << 4) + ((y & 15) << 8)] = cell;
-
-    /* 落在某个子世界包围盒内：更新它的八叉树 */
-    uint32_t it = 0;
-    void *v;
-    while (mcc_hmap_next(&s->bodies, &it, NULL, &v)) {
-        phys_body *b = v;
-        if (b->own_chunks || !b->has_octree) continue;
-        if (x >= b->bmin[0] && y >= b->bmin[1] && z >= b->bmin[2] && x <= b->bmax[0] && y <= b->bmax[1] && z <= b->bmax[2]) {
-            octree_put(&b->octree, cell, true, x - b->bmin[0], y - b->bmin[1], z - b->bmin[2]);
-            /* 方块变化可能让静止的结构该动了 */
-            b3Body_SetAwake(b->body, true);
-            return;
-        }
-    }
-    terrain_octree_set(s, x, y, z, cell, true);
 }
 
 /* ------------------------------------------------------------------ */
@@ -630,8 +495,7 @@ size_t phys_scene_drain_collisions(phys_scene *s, phys_collision *out, size_t ca
 void phys_scene_stats(phys_scene *s, phys_stats *out) {
     out->bodies = s->bodies.count;
     out->cells = s->cells.count;
-    out->sections = s->sections.count;
-    out->octree_chunks = s->octree_chunks.count;
+    out->terrain_chunks = s->terrain ? s->terrain->chunks.count : 0;
     out->manifolds = atomic_load(&s->stat_manifolds);
     out->pairs = atomic_load(&s->stat_pairs);
     out->collide_ns = atomic_load(&s->stat_collide_ns);

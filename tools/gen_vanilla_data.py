@@ -6,6 +6,7 @@
 
 输出:
   blocks.txt      方块与方块状态（与 NeoForge 导出工具输出同一格式）
+  shapes.txt      每个方块状态的碰撞形状（物理碰撞体的来源）
   registries.txt  配置阶段要同步的数据驱动注册表条目（顺序即网络编号）
 
 blocks.txt 格式（每行一条，空格分隔）:
@@ -13,6 +14,10 @@ blocks.txt 格式（每行一条，空格分隔）:
   P <属性名> <取值数> <取值1> <取值2> ...
   标志位: 1=透明 2=完整碰撞箱 4=可挖掘
   状态编号规则: 属性按出现顺序排列，最后一个属性变化最快（与原版 StateDefinition 一致）
+
+shapes.txt 格式:
+  S <形状编号> <碰撞箱数> [<x0> <y0> <z0> <x1> <y1> <z1>]...   方块内 0~1 坐标，可能越出单位方块（栅栏高 1.5）
+  C <命名空间:名称> <n> <形状编号>...                           n 为 1 表示所有状态同一形状，否则等于状态数
 """
 import json
 import os
@@ -26,6 +31,7 @@ def main():
     data, out = sys.argv[1], sys.argv[2]
     paths = json.load(open(os.path.join(data, 'dataPaths.json')))['pc']['1.21.1']
     blocks = json.load(open(os.path.join(data, paths['blocks'], 'blocks.json')))
+    shapes = json.load(open(os.path.join(data, paths['blockCollisionShapes'], 'blockCollisionShapes.json')))
     login = json.load(open(os.path.join(data, paths['loginPacket'], 'loginPacket.json')))
     os.makedirs(out, exist_ok=True)
 
@@ -53,6 +59,25 @@ def main():
                 f.write('P %s %d %s\n' % (p['name'], len(vals), ' '.join(vals)))
             expect += count
         print('方块 %d 种，状态 %d 个' % (len(blocks), expect))
+
+    with open(os.path.join(out, 'shapes.txt'), 'w') as f:
+        f.write('# mcc 方块碰撞形状 1.21.1 原版（由 gen_vanilla_data.py 生成）\n')
+        used = set()
+        lines = []
+        for b in blocks:
+            count = b['maxStateId'] - b['minStateId'] + 1
+            v = shapes['blocks'][b['name']]
+            ids = v if isinstance(v, list) else [v]
+            assert len(ids) in (1, count), b['name']
+            if len(set(ids)) == 1:
+                ids = ids[:1]
+            used.update(ids)
+            lines.append('C minecraft:%s %d %s\n' % (b['name'], len(ids), ' '.join(str(i) for i in ids)))
+        for sid in sorted(used):
+            boxes = shapes['shapes'][str(sid)]
+            f.write('S %d %d%s\n' % (sid, len(boxes), ''.join(' %g %g %g %g %g %g' % tuple(bx) for bx in boxes)))
+        f.writelines(lines)
+        print('碰撞形状 %d 种' % len(used))
 
     with open(os.path.join(out, 'registries.txt'), 'w') as f:
         f.write('# 配置阶段同步的注册表（条目顺序即网络编号）\n')

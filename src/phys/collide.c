@@ -1,8 +1,14 @@
 /*
  * 体素接触生成（移植自 Sable sable_rapier/algo.rs + dispatcher.rs）
  *
+ * 方块数据直接读世界区块存储（地形 / 子世界自己的存储），不保存副本：
+ *   - 碰撞体编号：方块状态表
+ *   - 外露实心 / 流体占用：区段里的物理位图（替代原来的八叉树）
+ *   - 邻居状态（面/棱/角/内部）：读六个邻居是否整块，现算
+ *
  * 流程：
- *   1. 找方块对：遍历一侧刚体的八叉树，节点中心变换到另一侧，查询另一侧八叉树（或地形 64³ 八叉树）
+ *   1. 找方块对：逐层遍历一侧刚体的占用位图（区段 16³ → 小块 4³ → 方块），
+ *      节点外接球变换到另一侧，查询另一侧的占用位图，没有重叠的整层剪掉
  *   2. 方块对接触：两块的每个碰撞箱两两做凸包碰撞（Box3D b3CollideHulls）
  *   3. 剔除假接触：接触点沿法线略微外移后落在本侧另一个实心方块里，说明是内部接缝，丢弃
  *   4. 合并：按法向 + 材质聚类，每类精简到最多 4 个点（大结构平放时控制接触片数量）
@@ -34,20 +40,12 @@ typedef struct vside {
     phys_cell *cell;          /* kind == CELL */
     double offset[3];         /* 方块坐标 → 形状局部系：local = block - offset */
     bool interior_check;      /* 多方块刚体或地形才做内部接缝剔除 */
-    const mcc_hmap *map;      /* 区块表 */
-    uint64_t ckey;            /* 区段查找缓存：上一次命中的区段 */
-    const phys_section *csec;
-    uint64_t okey;            /* 八叉树块查找缓存 */
-    const phys_octree_chunk *ochunk;
+    mcc_store_cursor cur;     /* 方块存储读游标（缓存上次命中的区块） */
 } vside;
-
-const mcc_hmap *phys_scene_sections(phys_scene *s);
 
 static void make_side(vside *v, void *user) {
     memset(v, 0, sizeof *v);
     v->kind = *(int *)user;
-    v->ckey = UINT64_MAX;
-    v->okey = UINT64_MAX;
     if (v->kind == PHYS_KIND_BODY) {
         v->body = user;
         memcpy(v->offset, v->body->com, sizeof v->offset);
@@ -58,33 +56,34 @@ static void make_side(vside *v, void *user) {
         memcpy(v->offset, v->cell->origin, sizeof v->offset);
         v->interior_check = true;
     }
-    phys_scene *sc = v->kind == PHYS_KIND_BODY ? v->body->scene : v->cell->scene;
-    v->map = (v->kind == PHYS_KIND_BODY && v->body->own_chunks) ? v->body->own_chunks : phys_scene_sections(sc);
+    mcc_cursor_init(&v->cur, v->kind == PHYS_KIND_BODY ? v->body->blocks : phys_scene_terrain(v->cell->scene));
 }
 
-static phys_scene *side_scene(const vside *v) { return v->kind == PHYS_KIND_BODY ? v->body->scene : v->cell->scene; }
-
-static uint32_t side_cell(vside *v, int32_t x, int32_t y, int32_t z) {
-    uint64_t key = phys_key3(x >> 4, y >> 4, z >> 4);
-    if (key != v->ckey) {
-        v->ckey = key;
-        v->csec = mcc_hmap_get(v->map, key);
-    }
-    if (!v->csec) return 0;
-    return v->csec->cells[(x & 15) + ((z & 15) << 4) + ((y & 15) << 8)];
-}
-
-static const phys_octree_chunk *side_ochunk(vside *v, int32_t ox, int32_t oy, int32_t oz) {
-    uint64_t key = phys_key3(ox, oy, oz);
-    if (key != v->okey) {
-        v->okey = key;
-        v->ochunk = phys_scene_octree_chunk(side_scene(v), ox, oy, oz);
-    }
-    return v->ochunk;
-}
+MCC_INLINE mcc_state_t side_state(vside *v, int32_t x, int32_t y, int32_t z) { return mcc_cursor_get(&v->cur, x, y, z); }
 
 static bool side_ready(const vside *v) {
-    return v->kind == PHYS_KIND_CELL || (v->body->has_octree && v->body->has_com && v->body->has_bounds);
+    return v->cur.store && (v->kind == PHYS_KIND_CELL || (v->body->has_com && v->body->has_bounds));
+}
+
+MCC_INLINE bool side_full(vside *v, int32_t x, int32_t y, int32_t z) {
+    return mcc_state_pflags(side_state(v, x, y, z)) & MCC_PHYS_FULL;
+}
+
+/* 邻居状态（Sable VoxelNeighborhoodState）：按六个邻居是否整块，判断方块处在结构的面、棱、角还是内部 */
+static uint32_t side_neighborhood(vside *v, int32_t x, int32_t y, int32_t z) {
+    bool all = true;
+    int both = 0;
+    const int d[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+    for (int a = 0; a < 3; a++) {
+        bool n = side_full(v, x - d[a][0], y - d[a][1], z - d[a][2]);
+        bool p = side_full(v, x + d[a][0], y + d[a][1], z + d[a][2]);
+        if (!n || !p) all = false;
+        if (n && p) both++;
+    }
+    if (all) return PHYS_VS_INTERIOR;
+    if (both == 1) return PHYS_VS_EDGE;
+    if (both == 0) return PHYS_VS_CORNER;
+    return PHYS_VS_FACE;
 }
 
 /* 地形格的方块范围：x、z 落在本格内（避免相邻格重复生成接触） */
@@ -96,7 +95,6 @@ static bool cell_owns(const phys_cell *c, int32_t x, int32_t z) {
 /* ---------------- 线程局部缓冲 ---------------- */
 
 typedef struct { int32_t s[3], d[3]; } block_pair;           /* static 侧方块、遍历侧方块 */
-typedef struct { uint32_t index; int32_t depth; int32_t min[3]; } trav_node;
 typedef struct {
     b3Vec3 normal;
     b3Vec3 point;
@@ -111,8 +109,7 @@ typedef struct {
 
 typedef struct scratch {
     MCC_VEC(block_pair) pairs;
-    MCC_VEC(trav_node) stack;
-    MCC_VEC(int32_t) hits;
+    mcc_i32vec hits;
     MCC_VEC(raw_point) points;
     MCC_VEC(uint16_t) point_cluster;
     MCC_VEC(raw_point) sorted;
@@ -125,101 +122,109 @@ static _Thread_local scratch t_s;
 
 /* ---------------- 找方块对（find_collision_pairs / get_overlapping_nodes） ---------------- */
 
-/* 查询另一侧在以 pos（方块坐标）为中心、dist 为半径范围内有没有方块。
- * cancel_early 时只回答有无；否则把命中的（按 log2 粒度的）方块坐标追加到 hits */
+/* 查询另一侧在以 pos（方块坐标）为中心、dist 为半径的包围盒内有没有外露实心（liquid 时为流体）方块。
+ * cancel_early 时只回答有无；否则把命中方块的坐标追加到 hits */
 static bool overlapping(vside *o, const double pos[3], double dist, bool cancel_early, bool liquid, scratch *sc) {
-    int lg = (int)floor(log2(dist * 2.0));
-    if (lg < 0) lg = 0;
     int32_t mn[3], mx[3];
     for (int i = 0; i < 3; i++) {
         mn[i] = (int32_t)floor(pos[i] - dist);
         mx[i] = (int32_t)floor(pos[i] + dist);
     }
     if (o->kind == PHYS_KIND_BODY) {
+        /* 只认包围盒内的方块（与质量追踪给出的范围一致） */
         const phys_body *b = o->body;
-        if (lg > b->octree.log_size) lg = b->octree.log_size;
-        int32_t lo[3], hi[3];
         for (int i = 0; i < 3; i++) {
-            lo[i] = MCC_MAX((mn[i] - b->bmin[i]) >> lg, 0);
-            hi[i] = (mx[i] - b->bmin[i]) >> lg;
+            mn[i] = MCC_MAX(mn[i], b->bmin[i]);
+            mx[i] = MCC_MIN(mx[i], b->bmax[i]);
+            if (mn[i] > mx[i]) return false;
         }
-        for (int32_t x = lo[0]; x <= hi[0]; x++)
-            for (int32_t y = lo[1]; y <= hi[1]; y++)
-                for (int32_t z = lo[2]; z <= hi[2]; z++) {
-                    if (phys_octree_query(&b->octree, x << lg, y << lg, z << lg, lg) > PHYS_OCTREE_EMPTY) {
-                        if (cancel_early) return true;
-                        mcc_vec_push(&sc->hits, (x << lg) + b->bmin[0]);
-                        mcc_vec_push(&sc->hits, (y << lg) + b->bmin[1]);
-                        mcc_vec_push(&sc->hits, (z << lg) + b->bmin[2]);
-                    }
-                }
-        return false;
     }
-    /* 地形：遍历覆盖范围内的 64³ 八叉树块 */
-    const int OS = PHYS_OCTREE_CHUNK_SHIFT;
-    if (lg > OS) lg = OS;
-    for (int32_t ox = mn[0] >> OS; ox <= mx[0] >> OS; ox++)
-        for (int32_t oy = mn[1] >> OS; oy <= mx[1] >> OS; oy++)
-            for (int32_t oz = mn[2] >> OS; oz <= mx[2] >> OS; oz++) {
-                const phys_octree_chunk *oc = side_ochunk(o, ox, oy, oz);
-                if (!oc) continue;
-                const phys_octree *t = liquid ? &oc->liquid : &oc->solid;
-                if (phys_octree_is_empty(t)) continue;
-                for (int32_t x = mn[0] >> lg; x <= mx[0] >> lg; x++)
-                    for (int32_t y = mn[1] >> lg; y <= mx[1] >> lg; y++)
-                        for (int32_t z = mn[2] >> lg; z <= mx[2] >> lg; z++) {
-                            if (phys_octree_query(t, (x << lg) - (ox << OS), (y << lg) - (oy << OS),
-                                                  (z << lg) - (oz << OS), lg) > PHYS_OCTREE_EMPTY) {
-                                if (cancel_early) return true;
-                                int32_t bx = x << lg, bz = z << lg;
-                                if (!cell_owns(o->cell, bx, bz)) continue;
-                                mcc_vec_push(&sc->hits, bx);
-                                mcc_vec_push(&sc->hits, y << lg);
-                                mcc_vec_push(&sc->hits, bz);
-                            }
-                        }
-            }
+    int kind = liquid ? MCC_OCC_LIQUID : MCC_OCC_SOLID;
+    if (cancel_early) return mcc_cursor_box_any(&o->cur, kind, mn, mx);
+    size_t from = sc->hits.len;
+    mcc_cursor_box_collect(&o->cur, kind, mn, mx, &sc->hits);
+    if (o->kind == PHYS_KIND_CELL && o->cell->cx != INT32_MIN) {
+        /* 地形格只认本格的方块，相邻格各管各的，避免重复接触 */
+        size_t w = from;
+        for (size_t r = from; r < sc->hits.len; r += 3) {
+            if (!cell_owns(o->cell, sc->hits.data[r], sc->hits.data[r + 2])) continue;
+            sc->hits.data[w] = sc->hits.data[r];
+            sc->hits.data[w + 1] = sc->hits.data[r + 1];
+            sc->hits.data[w + 2] = sc->hits.data[r + 2];
+            w += 3;
+        }
+        sc->hits.len = w;
+    }
     return false;
 }
 
-/* t：被遍历的刚体（必须有八叉树）；o：被查询的一侧。xf_to：t 局部系 → o 局部系 */
+typedef struct trav_ctx {
+    const vside *t;
+    vside *o;
+    b3Transform xf_to;
+    float prediction;
+    bool liquid;
+    scratch *sc;
+} trav_ctx;
+
+/* 被遍历侧以 (cx, cy, cz)（方块坐标，可带小数）为中心、半边长 half 的节点：变换到另一侧，查询重叠 */
+static bool node_overlaps(trav_ctx *tc, double cx, double cy, double cz, double half, bool cancel_early) {
+    const vside *t = tc->t;
+    b3Vec3 c = { (float)(cx - t->offset[0]), (float)(cy - t->offset[1]), (float)(cz - t->offset[2]) };
+    b3Vec3 co = b3TransformPoint(tc->xf_to, c);
+    double pos[3] = { co.x + tc->o->offset[0], co.y + tc->o->offset[1], co.z + tc->o->offset[2] };
+    return overlapping(tc->o, pos, half * 1.7321 + tc->prediction, cancel_early, tc->liquid, tc->sc);
+}
+
+/* t：被遍历的刚体；o：被查询的一侧。xf_to：t 局部系 → o 局部系。
+ * 遍历 t 的外露实心方块（只读区段位图），逐层剪枝：区段 → 4³ 小块 → 方块 */
 size_t phys_find_pairs(const vside *t, vside *o, b3Transform xf_to, float prediction, bool liquid, scratch *sc) {
     const phys_body *tb = t->body;
-    const phys_octree *oct = &tb->octree;
     sc->pairs.len = 0;
-    sc->stack.len = 0;
-    trav_node root = { 0, 0, { 0, 0, 0 } };
-    mcc_vec_push(&sc->stack, root);
-    /* 八叉树原点（tb->bmin）在 t 局部系中的位置 */
-    b3Vec3 base = { (float)(tb->bmin[0] - t->offset[0]), (float)(tb->bmin[1] - t->offset[1]), (float)(tb->bmin[2] - t->offset[2]) };
-    while (sc->stack.len) {
-        trav_node e = sc->stack.data[--sc->stack.len];
-        int32_t node = oct->buf[e.index];
-        if (node == 0) continue;
-        int32_t size = 1 << (oct->log_size - e.depth);
-        float half = (float)size * 0.5f;
-        b3Vec3 c = { base.x + (float)e.min[0] + half, base.y + (float)e.min[1] + half, base.z + (float)e.min[2] + half };
-        b3Vec3 co = b3TransformPoint(xf_to, c);
-        double pos[3] = { co.x + o->offset[0], co.y + o->offset[1], co.z + o->offset[2] };
-        double radius = (double)half * 1.7321 + prediction;
-        if (node > 0) {
-            if (!overlapping(o, pos, radius, true, liquid, sc)) continue;
-            int32_t h = size / 2;
-            for (int i = 0; i < 8; i++) {
-                trav_node ch = { (uint32_t)(node + i), e.depth + 1,
-                                 { e.min[0] + (i & 1) * h, e.min[1] + ((i >> 1) & 1) * h, e.min[2] + ((i >> 2) & 1) * h } };
-                mcc_vec_push(&sc->stack, ch);
-            }
-        } else {
-            sc->hits.len = 0;
-            overlapping(o, pos, radius, false, liquid, sc);
-            for (size_t i = 0; i + 2 < sc->hits.len; i += 3) {
-                block_pair p = { { sc->hits.data[i], sc->hits.data[i + 1], sc->hits.data[i + 2] },
-                                 { e.min[0] + tb->bmin[0], e.min[1] + tb->bmin[1], e.min[2] + tb->bmin[2] } };
-                mcc_vec_push(&sc->pairs, p);
+    trav_ctx tc = { t, o, xf_to, prediction, liquid, sc };
+    for (int32_t cx = tb->bmin[0] >> 4; cx <= tb->bmax[0] >> 4; cx++)
+        for (int32_t cz = tb->bmin[2] >> 4; cz <= tb->bmax[2] >> 4; cz++) {
+            const mcc_chunk *ch = mcc_store_chunk(tb->blocks, cx, cz);
+            if (!ch) continue;
+            int32_t sy0 = MCC_MAX(tb->bmin[1] >> 4, ch->min_sy), sy1 = MCC_MIN(tb->bmax[1] >> 4, ch->min_sy + ch->nsec - 1);
+            for (int32_t sy = sy0; sy <= sy1; sy++) {
+                int si = sy - ch->min_sy;
+                if (!(ch->solid_secs[si >> 6] >> (si & 63) & 1)) continue;
+                int32_t bx = cx << 4, by = sy << 4, bz = cz << 4;
+                if (!node_overlaps(&tc, bx + 8.0, by + 8.0, bz + 8.0, 8.0, true)) continue;
+                const uint16_t(*rows)[16] = ch->sec[si]->phys->solid;
+                for (int qy = 0; qy < 16; qy += 4)
+                    for (int qz = 0; qz < 16; qz += 4) {
+                        /* 这 4×16 行合起来，每 4 位对应一个 4³ 小块 */
+                        uint32_t acc = 0;
+                        for (int y = qy; y < qy + 4; y++)
+                            for (int z = qz; z < qz + 4; z++) acc |= rows[y][z];
+                        for (int qx = 0; qx < 16; qx += 4) {
+                            if (!(acc >> qx & 15)) continue;
+                            if (!node_overlaps(&tc, bx + qx + 2.0, by + qy + 2.0, bz + qz + 2.0, 2.0, true)) continue;
+                            for (int y = qy; y < qy + 4; y++)
+                                for (int z = qz; z < qz + 4; z++) {
+                                    uint32_t r = (rows[y][z] >> qx) & 15;
+                                    while (r) {
+                                        int x = qx + __builtin_ctz(r);
+                                        r &= r - 1;
+                                        int32_t d[3] = { bx + x, by + y, bz + z };
+                                        if (d[0] < tb->bmin[0] || d[1] < tb->bmin[1] || d[2] < tb->bmin[2] ||
+                                            d[0] > tb->bmax[0] || d[1] > tb->bmax[1] || d[2] > tb->bmax[2])
+                                            continue;
+                                        sc->hits.len = 0;
+                                        node_overlaps(&tc, d[0] + 0.5, d[1] + 0.5, d[2] + 0.5, 0.5, false);
+                                        for (size_t i = 0; i + 2 < sc->hits.len; i += 3) {
+                                            block_pair p = { { sc->hits.data[i], sc->hits.data[i + 1], sc->hits.data[i + 2] },
+                                                             { d[0], d[1], d[2] } };
+                                            mcc_vec_push(&sc->pairs, p);
+                                        }
+                                    }
+                                }
+                        }
+                    }
             }
         }
-    }
     return sc->pairs.len;
 }
 
@@ -228,8 +233,7 @@ size_t phys_find_pairs(const vside *t, vside *o, b3Transform xf_to, float predic
 static bool inside_voxel(vside *v, const int32_t ignore[3], const double pos[3]) {
     int32_t b[3] = { (int32_t)floor(pos[0]), (int32_t)floor(pos[1]), (int32_t)floor(pos[2]) };
     if (b[0] == ignore[0] && b[1] == ignore[1] && b[2] == ignore[2]) return false;
-    uint32_t cell = side_cell(v, b[0], b[1], b[2]);
-    const phys_collider *c = phys_collider_get(phys_cell_collider(cell));
+    const phys_collider *c = phys_collider_get(mcc_state_collider(side_state(v, b[0], b[1], b[2])));
     if (!c || c->fluid) return false;
     float lx = (float)(pos[0] - b[0]), ly = (float)(pos[1] - b[1]), lz = (float)(pos[2] - b[2]);
     for (int i = 0; i < c->nboxes; i++) {
@@ -267,13 +271,12 @@ static void add_point(scratch *sc, b3Vec3 n, b3Vec3 p, float sep, uint32_t feat,
 static void collide_block_pair(const pair_ctx *pc, const block_pair *bp, scratch *sc) {
     vside *S = pc->s_is_a ? pc->a : pc->b;
     vside *D = pc->s_is_a ? pc->b : pc->a;
-    uint32_t cs = side_cell(S, bp->s[0], bp->s[1], bp->s[2]);
-    const phys_collider *colS = phys_collider_get(phys_cell_collider(cs));
+    const phys_collider *colS = phys_collider_get(mcc_state_collider(side_state(S, bp->s[0], bp->s[1], bp->s[2])));
     if (!colS || colS->fluid || !colS->nboxes) return;
-    uint32_t cd = side_cell(D, bp->d[0], bp->d[1], bp->d[2]);
-    const phys_collider *colD = phys_collider_get(phys_cell_collider(cd));
+    const phys_collider *colD = phys_collider_get(mcc_state_collider(side_state(D, bp->d[0], bp->d[1], bp->d[2])));
     if (!colD || colD->fluid || !colD->nboxes) return;
-    uint32_t stS = phys_cell_state(cs), stD = phys_cell_state(cd);
+    uint32_t stS = side_neighborhood(S, bp->s[0], bp->s[1], bp->s[2]);
+    uint32_t stD = side_neighborhood(D, bp->d[0], bp->d[1], bp->d[2]);
     /* can_ignore_collision */
     if ((stS == PHYS_VS_FACE && stD == PHYS_VS_FACE) || stS == PHYS_VS_INTERIOR || stD == PHYS_VS_INTERIOR ||
         (stS == PHYS_VS_EDGE && stD == PHYS_VS_FACE) || (stS == PHYS_VS_FACE && stD == PHYS_VS_EDGE))
@@ -471,8 +474,7 @@ static void collide_voxel_convex(vside *a, const b3VoxelQuery *q, b3Transform xf
         for (int32_t y = mn[1]; y <= mx[1]; y++)
             for (int32_t z = mn[2]; z <= mx[2]; z++) {
                 if (a->kind == PHYS_KIND_CELL && !cell_owns(a->cell, x, z)) continue;
-                uint32_t cell = side_cell(a, x, y, z);
-                const phys_collider *col = phys_collider_get(phys_cell_collider(cell));
+                const phys_collider *col = phys_collider_get(mcc_state_collider(side_state(a, x, y, z)));
                 if (!col || col->fluid) continue;
                 int32_t blk[3] = { x, y, z };
                 for (int ib = 0; ib < col->nboxes; ib++) {
@@ -582,11 +584,9 @@ size_t phys_find_liquid_pairs(phys_body *body, int32_t **out_pairs) {
     phys_cell world = {0};
     world.kind = PHYS_KIND_CELL;
     world.scene = body->scene;
-    o.kind = PHYS_KIND_CELL;
-    o.body = NULL;
-    o.cell = &world;
-    o.offset[0] = o.offset[1] = o.offset[2] = 0;
-    o.interior_check = true;
+    world.cx = INT32_MIN; /* 虚拟地形侧不做格归属过滤 */
+    make_side(&o, &world);
+    if (!side_ready(&o)) return 0;
     b3WorldTransform xf = b3Body_GetTransform(body->body);
     /* t 局部 → 世界：位置 xf.p（双精度）拆成整数基准 + 小数部分，避免单精度丢失 */
     double base[3] = { floor(xf.p.x), floor(xf.p.y), floor(xf.p.z) };
@@ -594,8 +594,6 @@ size_t phys_find_liquid_pairs(phys_body *body, int32_t **out_pairs) {
     o.offset[1] = base[1];
     o.offset[2] = base[2];
     b3Transform to = { { (float)(xf.p.x - base[0]), (float)(xf.p.y - base[1]), (float)(xf.p.z - base[2]) }, xf.q };
-    /* 虚拟地形侧不做格归属过滤（cell_owns 对 cx == INT32_MIN 恒真） */
-    world.cx = INT32_MIN;
     size_t n = phys_find_pairs(&t, &o, to, 0.0f, true, sc);
     *out_pairs = (int32_t *)sc->pairs.data;
     return n;

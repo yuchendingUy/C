@@ -47,6 +47,16 @@ mcc_state_t mcc_block_default_state(const char *name) {
     return mcc_blocks.blocks[b].default_state;
 }
 
+/* 方块自带的流体（含水方块另按 waterlogged 属性判断） */
+static uint8_t block_fluid(const char *name) {
+    static const char *water[] = { "minecraft:water", "minecraft:bubble_column", "minecraft:kelp", "minecraft:kelp_plant",
+                                   "minecraft:seagrass", "minecraft:tall_seagrass" };
+    for (size_t i = 0; i < MCC_ARRAY_LEN(water); i++)
+        if (!strcmp(name, water[i])) return MCC_FLUID_WATER;
+    if (!strcmp(name, "minecraft:lava")) return MCC_FLUID_LAVA;
+    return MCC_FLUID_NONE;
+}
+
 static char *next_tok(char **p) {
     char *s = *p;
     while (*s == ' ' || *s == '\t') s++;
@@ -129,16 +139,27 @@ bool mcc_blocks_load(const char *path) {
         if (prod != d->state_count) mcc_log_fatal("方块 %s 属性组合数 %u 与状态数 %u 不符", d->name, prod, d->state_count);
         bool air = !strcmp(d->name, "minecraft:air") || !strcmp(d->name, "minecraft:cave_air") ||
                    !strcmp(d->name, "minecraft:void_air");
+        uint8_t fluid = block_fluid(d->name);
+        int waterlogged = -1;
+        for (int i = 0; i < d->nprops; i++)
+            if (!strcmp(d->props[i].name, "waterlogged")) waterlogged = i;
         for (uint32_t s = 0; s < d->state_count; s++) {
             mcc_state_info *si = &mcc_blocks.states[d->first_state + s];
             si->block = (mcc_block_t)b;
             si->flags = (uint8_t)(d->flags | (air ? 0x80 : 0));
             si->light = (uint8_t)((d->emit_light & 15) | ((d->filter_light & 15) << 4));
+            si->fluid = fluid;
+            if (waterlogged >= 0) {
+                const mcc_block_prop *p = &d->props[waterlogged];
+                if (!strcmp(p->values[(s / p->stride) % (uint32_t)p->nvalues], "true")) si->fluid = MCC_FLUID_WATER;
+            }
         }
     }
     int bits = 0;
     while ((1u << bits) < mcc_blocks.state_count) bits++;
     mcc_blocks.direct_bits = bits;
+    /* 区段直接模式按 16 位存状态编号 */
+    if (bits > 16) mcc_log_fatal("方块状态 %u 个，超过区段存储的 16 位上限", mcc_blocks.state_count);
     index_build();
     mcc_info("方块注册表载入：%u 种方块，%u 个状态，直接模式 %d 位", mcc_blocks.block_count, mcc_blocks.state_count, bits);
     return true;

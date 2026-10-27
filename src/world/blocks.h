@@ -31,11 +31,22 @@ typedef struct mcc_block_def {
     mcc_block_prop *props;
 } mcc_block_def;
 
+/* 流体（对应原版 FluidState 的流体种类） */
+enum { MCC_FLUID_NONE = 0, MCC_FLUID_WATER = 1, MCC_FLUID_LAVA = 2 };
+
+/* 物理标志（由 phys_block_colliders_load 填写），区段据此维护物理占用位图 */
+#define MCC_PHYS_SOLID  1u   /* 有碰撞箱 */
+#define MCC_PHYS_FULL   2u   /* 碰撞形状恰好是整个方块（判断邻居遮挡） */
+#define MCC_PHYS_LIQUID 4u   /* 含流体（水、熔岩、含水方块），参与浮力 */
+
 /* 每个状态的紧凑信息，热路径只读这一张表 */
 typedef struct mcc_state_info {
     mcc_block_t block;
     uint8_t flags;
     uint8_t light;         /* 低 4 位发光，高 4 位滤光 */
+    uint16_t collider;     /* 物理碰撞体编号，0 无 */
+    uint8_t pflags;        /* MCC_PHYS_* */
+    uint8_t fluid;         /* MCC_FLUID_* */
 } mcc_state_info;
 
 typedef struct mcc_block_registry {
@@ -62,6 +73,9 @@ MCC_INLINE bool mcc_state_is_air(mcc_state_t s) { return mcc_blocks.states[s].fl
 MCC_INLINE uint8_t mcc_state_emit_light(mcc_state_t s) { return mcc_blocks.states[s].light & 15; }
 MCC_INLINE uint8_t mcc_state_filter_light(mcc_state_t s) { return mcc_blocks.states[s].light >> 4; }
 MCC_INLINE bool mcc_state_full_box(mcc_state_t s) { return mcc_blocks.states[s].flags & MCC_BLOCK_FULL_BOX; }
+MCC_INLINE uint8_t mcc_state_fluid(mcc_state_t s) { return mcc_blocks.states[s].fluid; }
+MCC_INLINE uint32_t mcc_state_collider(mcc_state_t s) { return mcc_blocks.states[s].collider; }
+MCC_INLINE uint8_t mcc_state_pflags(mcc_state_t s) { return mcc_blocks.states[s].pflags; }
 
 /* 属性读写：prop 为属性下标，返回/传入取值下标 */
 int mcc_state_prop_index(mcc_state_t s, const char *prop);  /* 属性下标，-1 不存在 */

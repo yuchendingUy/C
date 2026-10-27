@@ -51,6 +51,10 @@ void phys_collider_clear_boxes(uint32_t id);
 void phys_colliders_finalize(void);
 void phys_colliders_free(void);
 
+/* 从 shapes.txt 给每个方块状态烘焙碰撞体（相同形状共用一个），填写方块状态表的
+ * collider 与 pflags（MCC_PHYS_SOLID / FULL / LIQUID）。须先载入方块注册表、且在 finalize 之前调用 */
+bool phys_block_colliders_load(const char *path);
+
 uint32_t phys_collider_count(void);
 const phys_collider *phys_collider_get(uint32_t id); /* id 从 1 开始，非法返回 NULL */
 
