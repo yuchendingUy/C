@@ -313,20 +313,6 @@ void mcc_viewer_post_tick(void *vp, mcc_region *r, mcc_region_world *w) {
         mcc_vec_free(&ids);
     }
     if (!w->phys || !w->sublevels.count) return;
-    if (w->ticks % 100 == 0) {
-        int aw = 0, lq = 0; double vmax = 0;
-        uint32_t it2 = 0; void *p2;
-        while (mcc_hmap_next(&w->sublevels, &it2, NULL, &p2)) {
-            phys_body *pb = phys_body_get(w->phys, ((mcc_sublevel *)p2)->id);
-            if (!pb) continue;
-            if (b3Body_IsAwake(pb->body)) aw++;
-            if (pb->has_tick_force) lq++;
-            b3Vec3 vv = b3Body_GetLinearVelocity(pb->body), ww = b3Body_GetAngularVelocity(pb->body);
-            double sp = b3Length(vv) + b3Length(ww);
-            if (sp > vmax) vmax = sp;
-        }
-        mcc_info("调试：区域 %llu 结构 %u 醒着 %d 在水里 %d 最大速度 %.4f 世界醒着 %d", (unsigned long long)r->id, w->sublevels.count, aw, lq, vmax, b3World_GetAwakeBodyCount(phys_scene_world(w->phys)));
-    }
 
     /* 醒着的结构：位姿发给所有客户端；客户端还不认识的结构：先发形状再补一个位姿 */
     bytes awake = { 0 }, extra = { 0 }, shape = { 0 };
