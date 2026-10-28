@@ -61,6 +61,8 @@ typedef struct mcc_block_registry {
 extern mcc_block_registry mcc_blocks;
 
 bool mcc_blocks_load(const char *path);
+/* 依次载入多个注册表文件（原版、机械动力……）：每个文件的状态编号从 0 写起，载入时接在前一个文件之后 */
+bool mcc_blocks_load_files(const char *const *paths, int npaths);
 void mcc_blocks_free(void);
 
 /* 名称查找，返回 -1 表示不存在 */

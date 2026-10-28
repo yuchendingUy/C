@@ -16,7 +16,11 @@ void mcc_store_init(mcc_chunk_store *st, int32_t min_y, int32_t height) {
     st->nsec = height >> 4;
     mcc_hmap_init(&st->chunks, 64);
     st->listeners = NULL;
+    st->ext = NULL;
 }
+
+void (*mcc_chunk_ext_free)(mcc_chunk *c);
+void (*mcc_store_ext_free)(mcc_chunk_store *st);
 
 void mcc_store_free(mcc_chunk_store *st) {
     uint32_t it = 0;
@@ -24,6 +28,8 @@ void mcc_store_free(mcc_chunk_store *st) {
     while (mcc_hmap_next(&st->chunks, &it, NULL, &v)) mcc_chunk_free((mcc_chunk*)v);
     mcc_hmap_free(&st->chunks);
     st->listeners = NULL;
+    if (st->ext && mcc_store_ext_free) mcc_store_ext_free(st);
+    st->ext = NULL;
 }
 
 void mcc_store_listen(mcc_chunk_store *st, mcc_store_listener *l) {
@@ -55,6 +61,7 @@ mcc_chunk *mcc_chunk_new(const mcc_chunk_store *st, int32_t cx, int32_t cz) {
 
 void mcc_chunk_free(mcc_chunk *c) {
     if (!c) return;
+    if (c->ext && mcc_chunk_ext_free) mcc_chunk_ext_free(c);
     for (int i = 0; i < c->nsec; i++) mcc_section_free(c->sec[i]);
     free(c);
 }

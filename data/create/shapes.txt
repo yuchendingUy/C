@@ -1,0 +1,34 @@
+# mcc 方块碰撞形状：机械动力（由 tools/gen_create_blocks.py 生成，形状编号从 0 写起）
+S 0 1 0 0.3125 0.3125 1 0.6875 0.6875
+S 1 1 0.3125 0 0.3125 0.6875 1 0.6875
+S 2 1 0.3125 0.3125 0 0.6875 0.6875 1
+S 3 2 0.375 0.125 0.125 0.625 0.875 0.875 0 0.3125 0.3125 1 0.6875 0.6875
+S 4 2 0.125 0.375 0.125 0.875 0.625 0.875 0.3125 0 0.3125 0.6875 1 0.6875
+S 5 2 0.125 0.125 0.375 0.875 0.875 0.625 0.3125 0.3125 0 0.6875 0.6875 1
+S 6 2 0.375 0 0 0.625 1 1 0 0.3125 0.3125 1 0.6875 0.6875
+S 7 2 0 0.375 0 1 0.625 1 0.3125 0 0.3125 0.6875 1 0.6875
+S 8 2 0 0 0.375 1 1 0.625 0.3125 0.3125 0 0.6875 0.6875 1
+S 9 1 0 0 0 1 1 1
+S 10 1 0.1875 0.1875 0.125 0.8125 0.8125 1
+S 11 1 0 0.1875 0.1875 0.875 0.8125 0.8125
+S 12 1 0.1875 0.1875 0 0.8125 0.8125 0.875
+S 13 1 0.125 0.1875 0.1875 1 0.8125 0.8125
+S 14 1 0.1875 0 0.1875 0.8125 0.875 0.8125
+S 15 1 0.1875 0.125 0.1875 0.8125 1 0.8125
+S 16 2 0 0 0 1 0.25 1 0.0625 0.0625 0.0625 0.9375 0.8125 0.9375
+C create:shaft 6 0 0 1 1 2 2
+C create:cogwheel 6 3 3 4 4 5 5
+C create:large_cogwheel 6 6 6 7 7 8 8
+C create:andesite_encased_shaft 1 9
+C create:brass_encased_shaft 1 9
+C create:andesite_encased_cogwheel 1 9
+C create:brass_encased_cogwheel 1 9
+C create:andesite_encased_large_cogwheel 1 9
+C create:brass_encased_large_cogwheel 1 9
+C create:gearbox 1 9
+C create:clutch 1 9
+C create:gearshift 1 9
+C create:encased_chain_drive 1 9
+C create:adjustable_chain_gearshift 1 9
+C create:creative_motor 6 10 11 12 13 14 15
+C create:rotation_speed_controller 1 16

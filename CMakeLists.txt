@@ -49,7 +49,7 @@ target_compile_definitions(box3d PUBLIC B3_MAX_WORLDS=4096)
 target_compile_options(box3d PRIVATE -w -ffp-contract=off)
 target_link_libraries(box3d PUBLIC Threads::Threads m)
 
-file(GLOB_RECURSE MCC_CORE_SRC src/core/*.cpp src/region/*.cpp src/world/*.cpp src/create/*.cpp src/phys/*.cpp)
+file(GLOB_RECURSE MCC_CORE_SRC src/core/*.cpp src/region/*.cpp src/world/*.cpp src/phys/*.cpp src/game/*.cpp src/create/*.cpp)
 add_library(mcc_core STATIC ${MCC_CORE_SRC})
 target_link_libraries(mcc_core PUBLIC box3d Threads::Threads m)
 

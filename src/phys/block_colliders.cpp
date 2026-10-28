@@ -110,19 +110,29 @@ static bool load_props(const char *path, block_props *props) {
 }
 
 bool phys_block_colliders_load(const char *path, const char *props_path) {
+    return phys_block_colliders_load_files(&path, 1, props_path);
+}
+
+bool phys_block_colliders_load_files(const char *const *paths, int npaths, const char *props_path) {
     if (!mcc_blocks.states) mcc_log_fatal("载入碰撞形状前须先载入方块注册表");
     block_props *props = (block_props*)mcc_xmalloc(sizeof *props * mcc_blocks.block_count);
     if (!load_props(props_path, props)) { free(props); return false; }
     free(phys_state_mass);
     phys_state_mass = (float*)mcc_xcalloc(mcc_blocks.state_count, sizeof(float));
-    FILE *f = fopen(path, "r");
-    if (!f) { mcc_error("无法打开碰撞形状文件 %s", path); free(props); return false; }
     MCC_VEC(shape_def) shapes = {0};
     size_t len = 0;
     char *line = NULL;
     int lineno = 0;
     uint32_t blocks = 0;
     bool ok = true;
+    const char *path = "";
+    for (int fi = 0; fi < npaths && ok; fi++) {
+    path = paths[fi];
+    FILE *f = fopen(path, "r");
+    if (!f) { mcc_error("无法打开碰撞形状文件 %s", path); ok = false; break; }
+    lineno = 0;
+    /* 每个文件的形状编号从 0 写起，载入时接在前面的文件之后 */
+    const size_t base = shapes.len;
     while (mcc_getline(&line, &len, f) > 0) {
         lineno++;
         char *p = line, *t = tok(&p);
@@ -130,7 +140,7 @@ bool phys_block_colliders_load(const char *path, const char *props_path) {
         if (!strcmp(t, "S")) {
             char *a = tok(&p), *b = tok(&p);
             if (!a || !b) { ok = false; break; }
-            size_t id = strtoul(a, NULL, 10);
+            size_t id = base + strtoul(a, NULL, 10);
             while (shapes.len <= id) mcc_vec_push(&shapes, (shape_def){0});
             shape_def *sh = &shapes.data[id];
             sh->nboxes = atoi(b);
@@ -155,7 +165,7 @@ bool phys_block_colliders_load(const char *path, const char *props_path) {
                 if (s < n) {
                     char *v = tok(&p);
                     if (!v) { ok = false; break; }
-                    sid = (uint32_t)strtoul(v, NULL, 10);
+                    sid = (uint32_t)(base + strtoul(v, NULL, 10));
                 }
                 if (sid >= shapes.len) { ok = false; break; }
                 shape_def *sh = &shapes.data[sid];
@@ -179,8 +189,9 @@ bool phys_block_colliders_load(const char *path, const char *props_path) {
             break;
         }
     }
-    free(line);
     fclose(f);
+    }
+    free(line);
     for (size_t i = 0; i < shapes.len; i++) {
         free(shapes.data[i].boxes);
         mcc_vec_free(&shapes.data[i].baked);

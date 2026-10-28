@@ -27,6 +27,7 @@ typedef struct mcc_chunk {
     mcc_chunk_store *store;           /* 已加入的存储，未加入为 NULL */
     uint64_t solid_secs[MCC_CHUNK_MAX_SECTIONS / 64];   /* 第 i 位：第 i 个区段 solid_count > 0 */
     uint64_t liquid_secs[MCC_CHUNK_MAX_SECTIONS / 64];
+    void *ext;                        /* 游戏层的区块数据（方块实体、计划刻），随区块搬家 */
     mcc_chunk_section *sec[];
 } mcc_chunk;
 
@@ -42,7 +43,13 @@ struct mcc_chunk_store {
     int32_t min_sy, nsec;
     mcc_hmap chunks;                  /* mcc_key2(cx, cz) → mcc_chunk* */
     mcc_store_listener *listeners;
+    void *ext;                        /* 游戏层的方块空间（随存储一起交换、销毁） */
 };
+
+/* 游戏层释放区块数据 / 存储数据的钩子（未设置时忽略 ext）。
+ * 存储释放时先逐个释放区块（区块钩子），再调用存储钩子 */
+extern void (*mcc_chunk_ext_free)(mcc_chunk *c);
+extern void (*mcc_store_ext_free)(mcc_chunk_store *st);
 
 /* ---- 存储 ---- */
 /* min_y、height 为方块单位，须是 16 的倍数 */

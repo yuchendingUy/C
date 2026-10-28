@@ -21,6 +21,17 @@ static void test_load_blocks(void) {
     WATER = mcc_block_default_state("water");
 }
 
+/* 原版 + 机械动力方块 */
+static void test_load_blocks_with_create(void) {
+    const char *blocks[] = { MCC_SOURCE_DIR "/data/blocks.txt", MCC_SOURCE_DIR "/data/create/blocks.txt" };
+    const char *shapes[] = { MCC_SOURCE_DIR "/data/shapes.txt", MCC_SOURCE_DIR "/data/create/shapes.txt" };
+    if (!mcc_blocks_load_files(blocks, 2)) mcc_log_fatal("载入方块注册表失败");
+    if (!phys_block_colliders_load_files(shapes, 2, MCC_SOURCE_DIR "/data/phys_props.txt")) mcc_log_fatal("载入碰撞形状失败");
+    phys_colliders_finalize();
+    STONE = mcc_block_default_state("stone");
+    WATER = mcc_block_default_state("water");
+}
+
 static void test_free_blocks(void) {
     phys_colliders_free();
     mcc_blocks_free();

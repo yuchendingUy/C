@@ -57,6 +57,8 @@ void phys_colliders_free(void);
  * props_path 为方块物理属性表（phys_props.txt），可为 NULL 全用默认值。
  * 须先载入方块注册表、且在 finalize 之前调用 */
 bool phys_block_colliders_load(const char *path, const char *props_path);
+/* 多个形状文件（原版、机械动力……），形状编号各自从 0 写起 */
+bool phys_block_colliders_load_files(const char *const *paths, int npaths, const char *props_path);
 
 /* 每个方块状态的质量（phys_block_colliders_load 之后有效） */
 extern float *phys_state_mass;

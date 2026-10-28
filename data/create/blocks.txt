@@ -1,0 +1,51 @@
+# mcc 方块注册表：机械动力（由 tools/gen_create_blocks.py 生成，状态编号从 0 写起，载入时接在原版之后）
+B create:shaft 0 6 3 1.5 6 5 0 0 2
+P axis 3 x y z
+P waterlogged 2 true false
+B create:cogwheel 6 6 9 1.5 6 5 0 0 2
+P axis 3 x y z
+P waterlogged 2 true false
+B create:large_cogwheel 12 6 15 1.5 6 5 0 0 2
+P axis 3 x y z
+P waterlogged 2 true false
+B create:andesite_encased_shaft 18 3 19 1.5 6 6 0 1 1
+P axis 3 x y z
+B create:brass_encased_shaft 21 3 22 1.5 6 6 0 1 1
+P axis 3 x y z
+B create:andesite_encased_cogwheel 24 12 31 1.5 6 6 0 1 3
+P axis 3 x y z
+P bottom_shaft 2 true false
+P top_shaft 2 true false
+B create:brass_encased_cogwheel 36 12 43 1.5 6 6 0 1 3
+P axis 3 x y z
+P bottom_shaft 2 true false
+P top_shaft 2 true false
+B create:andesite_encased_large_cogwheel 48 12 55 1.5 6 6 0 1 3
+P axis 3 x y z
+P bottom_shaft 2 true false
+P top_shaft 2 true false
+B create:brass_encased_large_cogwheel 60 12 67 1.5 6 6 0 1 3
+P axis 3 x y z
+P bottom_shaft 2 true false
+P top_shaft 2 true false
+B create:gearbox 72 3 73 1.5 6 6 0 1 1
+P axis 3 x y z
+B create:clutch 75 6 78 1.5 6 6 0 1 2
+P axis 3 x y z
+P powered 2 true false
+B create:gearshift 81 6 84 1.5 6 6 0 1 2
+P axis 3 x y z
+P powered 2 true false
+B create:encased_chain_drive 87 24 98 1.5 6 6 0 1 3
+P axis 3 x y z
+P axis_along_first 2 true false
+P part 4 start middle end none
+B create:adjustable_chain_gearshift 111 48 134 1.5 6 6 0 1 4
+P axis 3 x y z
+P axis_along_first 2 true false
+P part 4 start middle end none
+P powered 2 true false
+B create:creative_motor 159 6 159 1.5 6 5 0 0 1
+P facing 6 north east south west up down
+B create:rotation_speed_controller 165 2 165 1.5 6 5 0 0 1
+P axis 2 x z

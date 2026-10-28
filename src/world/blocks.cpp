@@ -68,15 +68,24 @@ static char *next_tok(char **p) {
     return s;
 }
 
-bool mcc_blocks_load(const char *path) {
-    FILE *f = fopen(path, "r");
-    if (!f) { mcc_error("无法打开方块注册表 %s", path); return false; }
+bool mcc_blocks_load(const char *path) { return mcc_blocks_load_files(&path, 1); }
+
+bool mcc_blocks_load_files(const char *const *paths, int npaths) {
     MCC_VEC(mcc_block_def) blocks = {0};
     char line[8192];
     mcc_block_def *cur = NULL;
     int prop_fill = 0;
     uint32_t expect_state = 0;
     int lineno = 0;
+    const char *path = "";
+    FILE *f = NULL;
+    for (int fi = 0; fi < npaths; fi++) {
+    path = paths[fi];
+    f = fopen(path, "r");
+    if (!f) { mcc_error("无法打开方块注册表 %s", path); return false; }
+    lineno = 0;
+    /* 每个文件里的状态编号从 0 开始写，载入时接在前面的文件之后 */
+    const uint32_t base = expect_state;
     while (fgets(line, sizeof line, f)) {
         lineno++;
         char *p = line;
@@ -88,9 +97,9 @@ bool mcc_blocks_load(const char *path) {
             char *t[10];
             for (int i = 0; i < 10; i++) if (!(t[i] = next_tok(&p))) goto bad;
             d.name = mcc_xstrdup(t[0]);
-            d.first_state = (mcc_state_t)strtoul(t[1], NULL, 10);
+            d.first_state = base + (mcc_state_t)strtoul(t[1], NULL, 10);
             d.state_count = (uint32_t)strtoul(t[2], NULL, 10);
-            d.default_state = (mcc_state_t)strtoul(t[3], NULL, 10);
+            d.default_state = base + (mcc_state_t)strtoul(t[3], NULL, 10);
             d.hardness = strtof(t[4], NULL);
             d.resistance = strtof(t[5], NULL);
             d.flags = (uint8_t)atoi(t[6]);
@@ -122,6 +131,7 @@ bool mcc_blocks_load(const char *path) {
     }
     fclose(f);
     if (cur && prop_fill != cur->nprops) { lineno++; goto bad_closed; }
+    }
     { /* 新作用域：C++ 不允许 goto 跨过下面的变量初始化 */
 
     mcc_blocks.blocks = blocks.data;
