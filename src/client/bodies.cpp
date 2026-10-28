@@ -252,6 +252,7 @@ void Bodies::draw(bool depth_only) {
         Vector3 cam = g_view_pos;
         rlSetUniform(GetShaderLocation(sh, "viewPos"), &cam, RL_SHADER_UNIFORM_VEC3, 1);
         rlSetUniformMatrix(GetShaderLocation(sh, "lightVP"), g_render.light_vp);
+        rlSetUniform(GetShaderLocation(sh, "flash"), &g_flash, RL_SHADER_UNIFORM_VEC4, 1);
         int slot = 1;
         rlActiveTextureSlot(1);
         rlEnableTexture(render_shadow_texture());

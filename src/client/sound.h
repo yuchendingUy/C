@@ -6,7 +6,7 @@
 
 namespace mcc::client {
 
-enum Sfx { SFX_PLACE, SFX_BREAK, SFX_STEP, SFX_GRAB, SFX_DROP, SFX_FREEZE, SFX_CLICK, SFX_COUNT };
+enum Sfx { SFX_PLACE, SFX_BREAK, SFX_STEP, SFX_GRAB, SFX_DROP, SFX_FREEZE, SFX_CLICK, SFX_BOOM, SFX_COUNT };
 
 void sound_init();
 void sound_close();

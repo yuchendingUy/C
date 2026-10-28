@@ -9,6 +9,7 @@
 namespace mcc::client {
 
 Render g_render;
+Vector4 g_flash;
 
 /* ------------------------------------------------------------------ */
 /* 灯光布局：灯在 y=99、x 和 z 都是 16 的倍数，柱子所在的格子（x、z 除以 16 都是奇数）没有灯 */
@@ -27,6 +28,7 @@ uniform vec2 fogRange;
 uniform mat4 lightVP;
 uniform sampler2D texture1;
 uniform float shadowTexel, time;
+uniform vec4 flash;
 
 const float LAMP_Y = 99.0, LAMP_STEP = 16.0;
 
@@ -76,6 +78,11 @@ vec3 lighting(vec3 base, vec3 wp, vec3 n, float ao, bool shadow) {
     vec3 direct = lamps(wp, n);
     float sh = shadow && dot(n, lightDir) > -0.2 ? shadowAt(wp, n) : 1.0;
     vec3 amb = mix(ambDown, ambUp, n.y * 0.5 + 0.5);
+    if (flash.w > 0.0) {                                  /* 爆炸火光 */
+        vec3 d = flash.xyz - wp;
+        float dist2 = dot(d, d);
+        direct += vec3(1.0, 0.55, 0.2) * flash.w * max(dot(n, d * inversesqrt(dist2 + 1e-4)), 0.0) * 30.0 / (dist2 + 30.0);
+    }
     return base * (amb * ao + direct * mix(0.15, 1.0, sh) * (0.6 + 0.4 * ao));
 }
 vec3 applyFog(vec3 c, vec3 wp, float k) {
@@ -347,6 +354,7 @@ void render_frame(Vector3 cam, float time) {
     SetShaderValue(g_render.lit, GetShaderLocation(g_render.lit, "viewPos"), &cam, SHADER_UNIFORM_VEC3);
     SetShaderValue(g_render.lit, GetShaderLocation(g_render.lit, "time"), &time, SHADER_UNIFORM_FLOAT);
     SetShaderValue(g_shaft, GetShaderLocation(g_shaft, "viewPos"), &cam, SHADER_UNIFORM_VEC3);
+    SetShaderValue(g_render.lit, GetShaderLocation(g_render.lit, "flash"), &g_flash, SHADER_UNIFORM_VEC4);
 }
 
 Color render_fog_color() { return Color{ (unsigned char)(FOG_COL.x * 255), (unsigned char)(FOG_COL.y * 255), (unsigned char)(FOG_COL.z * 255), 255 }; }
@@ -392,6 +400,30 @@ void render_shadow_end() {
     rlLoadIdentity();
     rlDisableFramebuffer();
     rlViewport(0, 0, GetRenderWidth(), GetRenderHeight());
+}
+
+/* 柔边光团（叠加混合，不写深度）：爆炸火球用 */
+void render_glow(Camera3D cam, Vector3 c, float size, Color col) {
+    Vector3 f = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+    Vector3 r = Vector3Normalize(Vector3CrossProduct(f, cam.up)), u = Vector3CrossProduct(r, f);
+    rlDrawRenderBatchActive();
+    BeginBlendMode(BLEND_ADDITIVE);
+    rlDisableDepthMask();
+    rlDisableBackfaceCulling();
+    BeginShaderMode(g_glow);
+    rlBegin(RL_QUADS);
+    rlColor4ub(col.r, col.g, col.b, col.a);
+    static const float UV[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+    for (int v = 0; v < 4; v++) {
+        Vector3 p = Vector3Add(c, Vector3Add(Vector3Scale(r, (UV[v][0] * 2 - 1) * size), Vector3Scale(u, (UV[v][1] * 2 - 1) * size)));
+        rlTexCoord2f(UV[v][0], UV[v][1]);
+        rlVertex3f(p.x, p.y, p.z);
+    }
+    rlEnd();
+    EndShaderMode();
+    rlEnableBackfaceCulling();
+    rlEnableDepthMask();
+    EndBlendMode();
 }
 
 /* 每盏灯：一根往下散开的光柱 + 一圈光晕（叠加混合，不写深度） */

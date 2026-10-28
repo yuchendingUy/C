@@ -24,6 +24,8 @@ struct Render {
     Matrix light_vp;
 };
 extern Render g_render;
+/* 爆炸火光：xyz 位置，w 亮度（0 表示没有） */
+extern Vector4 g_flash;
 
 void render_init();
 /* 每帧开头：相机位置、时间 */
@@ -34,6 +36,8 @@ void render_shadow_end();
 unsigned render_shadow_texture();
 /* 灯的光晕和光柱（半透明，最后画） */
 void render_lamp_glow(Camera3D cam);
+/* 朝着镜头的柔边光团（叠加混合）：col 的透明度是亮度 */
+void render_glow(Camera3D cam, Vector3 c, float size, Color col);
 Color render_fog_color();
 /* 着色器公共部分（实例化结构的着色器也要用） */
 extern const char *LIGHT_GLSL;

@@ -100,6 +100,16 @@ void sound_init() {
     g_sfx[SFX_DROP] = make(sweep(0.18f, 700, 220, 0.45f));
     g_sfx[SFX_FREEZE] = make(sweep(0.25f, 1400, 1300, 0.35f));
     g_sfx[SFX_CLICK] = make(sweep(0.03f, 2000, 1800, 0.3f));
+    {   /* 爆炸：一声闷响加往下掉的低频，大厅里回荡 */
+        auto v = noise(1.2f, 0.12f);
+        float ph = 0;
+        for (size_t i = 0; i < v.size(); i++) {
+            float t = (float)i / RATE;
+            ph += 2 * PI * (70 - 40 * fminf(1, t * 2)) / RATE;
+            v[i] = (v[i] * 2.2f * expf(-t * 4) + sinf(ph) * 0.8f * expf(-t * 3)) * fminf(1, t * 400);
+        }
+        g_sfx[SFX_BOOM] = make(echo(v, 0.37f, 0.45f, 5));
+    }
     {   /* 物理枪嗡嗡声：1 秒一圈，首尾相接 */
         std::vector<float> v(RATE);
         for (int i = 0; i < RATE; i++) {

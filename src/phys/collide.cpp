@@ -163,6 +163,11 @@ typedef struct scratch {
     uint32_t *gtab;
     uint32_t gtab_cap;
     MCC_VEC(uint32_t) canon_idx;
+    /* 按速度放大的预判距离：超出默认距离的点，只留这一步里真可能撞上的（沿法线在靠近） */
+    bool spec_filter;
+    b3Vec3 vrel;          /* B 相对 A 的速度（A 局部系） */
+    float rot_slack;      /* 转动带来的额外靠近速度上限 */
+    float spec_base, dt;
 } scratch;
 
 static thread_local scratch t_s;
@@ -647,6 +652,10 @@ static void collide_canonical(const pair_ctx *pc, const uint32_t *idx, size_t n,
 /* ---------------- 聚类与精简 ---------------- */
 
 static void add_point(scratch *sc, b3Vec3 n, b3Vec3 p, float sep, uint32_t feat, float friction, float restitution) {
+    if (sc->spec_filter && sep > sc->spec_base) {
+        float closing = -b3Dot(sc->vrel, n) + sc->rot_slack;
+        if (sep > closing * sc->dt * 1.2f + sc->spec_base) return;
+    }
     int ci = -1;
     float best = -2.0f;
     int best_any = -1;
@@ -820,6 +829,7 @@ _Atomic(uint64_t) g_prof[8];
 
 
 static void scratch_reset(scratch *sc) {
+    sc->spec_filter = false;
     sc->points.len = 0;
     sc->point_cluster.len = 0;
     sc->ncluster = 0;
@@ -827,6 +837,38 @@ static void scratch_reset(scratch *sc) {
 
 static uint64_t body_volume(const phys_body *b) {
     return (uint64_t)(b->bmax[0] - b->bmin[0] + 1) * (uint64_t)(b->bmax[1] - b->bmin[1] + 1) * (uint64_t)(b->bmax[2] - b->bmin[2] + 1);
+}
+
+/* 这一步里两侧最多能互相靠近多少：
+ * Box3D 的连续碰撞对体素形状关掉了，只靠预判接触（隔一点距离就先生成接触点，求解器保证不会越过）。
+ * 默认预判距离只有 0.02 格，结构高速落下时一步能走一格多，第一次碰到时已经嵌进去超过半格，
+ * 方块对的分离轴会选反方向，把结构往里推，结果穿过地面。按相对速度放大预判距离就能挡住。 */
+static float side_speed_bound(const vside *v, b3Vec3 *lin) {
+    *lin = b3Vec3_zero;
+    if (v->kind != PHYS_KIND_BODY) return 0;
+    const phys_body *b = v->body;
+    *lin = b3Body_GetLinearVelocity(b->body);
+    float r = 0;
+    for (int k = 0; k < 3; k++) {
+        float e = (float)fmax(fabs(b->bmin[k] - b->com[k]), fabs(b->bmax[k] + 1 - b->com[k]));
+        r += e * e;
+    }
+    return b3Length(b3Body_GetAngularVelocity(b->body)) * sqrtf(r);
+}
+
+static float motion_margin(phys_scene *s, const vside *a, const vside *b, b3Quat qa, scratch *sc) {
+    float dt = phys_scene_step_dt(s);
+    if (dt <= 0) return 0;
+    b3Vec3 la, lb;
+    float rot = side_speed_bound(a, &la) + side_speed_bound(b, &lb);
+    float g = phys_scene_gravity(s) * dt;
+    sc->vrel = b3InvRotateVector(qa, b3Sub(lb, la));
+    sc->rot_slack = rot + g;
+    sc->dt = dt;
+    float speed = b3Length(b3Sub(la, lb)) + rot + g;
+    /* 一步靠近不到 0.4 格时不会穿（嵌入不到半格，分离轴方向还是对的），保持默认，免得改变慢速接触的手感 */
+    float reach = speed * dt * 1.2f;
+    return reach < 0.4f ? 0.f : fminf(reach, 4.0f);
 }
 
 const b3VoxelManifold *phys_voxel_manifolds(const b3VoxelQuery *q_in, int *count, void *ctx) {
@@ -854,6 +896,10 @@ const b3VoxelManifold *phys_voxel_manifolds(const b3VoxelQuery *q_in, int *count
 
     make_side(&b, q->userB);
     if (!side_ready(&b)) return NULL;
+    sc->spec_base = qv.speculativeDistance;
+    float margin = motion_margin(scene, &a, &b, q->transformA.q, sc);
+    sc->spec_filter = margin > sc->spec_base;
+    qv.speculativeDistance = MCC_MAX(qv.speculativeDistance, margin);
 
     pair_ctx pc = { &a, &b, xf_ba, true, q->speculativeDistance };
     vside *trav, *other;

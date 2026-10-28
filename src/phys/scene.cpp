@@ -27,6 +27,7 @@ struct phys_scene {
     int contact_cap;
     _Atomic(uint64_t) stat_manifolds, stat_pairs, stat_collide_ns;
     uint64_t stat_step_ns, stat_tick_ns;
+    float step_dt;                       /* 当前这一步的时长（碰撞按速度放大预判距离用） */
 };
 
 /* ------------------------------------------------------------------ */
@@ -458,6 +459,13 @@ void phys_body_apply_world_impulse(phys_scene *s, int32_t id, const double point
                               (b3Pos){ point[0], point[1], point[2] }, true);
 }
 
+float phys_scene_step_dt(phys_scene *s) { return s->step_dt; }
+
+float phys_scene_gravity(phys_scene *s) {
+    const double *g = s->cfg.gravity;
+    return (float)sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+}
+
 double phys_scene_gravity_scale(phys_scene *s) {
     const double *g = s->cfg.gravity;
     return sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]) / 9.81;
@@ -638,6 +646,7 @@ void phys_scene_step(phys_scene *s, double dt) {
         b3Body_ApplyTorque(b->body, b->tick_torque, false);
     }
     uint64_t t0 = mcc_nanotime();
+    s->step_dt = (float)dt;
     b3World_Step(s->world, (float)dt, s->tuning.substeps);
     s->stat_step_ns += mcc_nanotime() - t0;
     gather_collisions(s, dt);

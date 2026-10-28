@@ -123,6 +123,8 @@ void phys_body_apply_impulse(phys_scene *s, int32_t id, const double local_point
 void phys_body_apply_world_impulse(phys_scene *s, int32_t id, const double point[3], const double impulse[3]);
 /* 重力大小相对 9.81 的倍数（浮力按它放大，重力变了物体照样能浮起来） */
 double phys_scene_gravity_scale(phys_scene *s);
+float phys_scene_gravity(phys_scene *s);         /* 重力加速度大小 */
+float phys_scene_step_dt(phys_scene *s);         /* 正在进行的这一步的时长（碰撞回调里用） */
 void phys_body_apply_impulse_torque(phys_scene *s, int32_t id, const double local_impulse[3], const double local_torque[3], bool wake);
 void phys_body_get_linear_velocity(phys_scene *s, int32_t id, double out[3]);
 void phys_body_get_angular_velocity(phys_scene *s, int32_t id, double out[3]);

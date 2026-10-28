@@ -247,6 +247,128 @@ static void update_particles(float dt) {
     std::erase_if(g_parts, [](const Particle &p) { return p.life <= 0; });
 }
 
+/* 炸弹：扔出去按抛物线飞，碰地形会弹，碰到结构或引信到时就炸，
+ * 把半径内的物理结构炸飞（服务端 explode 命令），测性能用 */
+struct Bomb {
+    Vector3 p, v;
+    float t;
+};
+struct Blast {
+    Vector3 p;
+    float t;
+};
+static std::vector<Bomb> g_bombs;
+static std::vector<Blast> g_blasts;
+static float g_shake, g_throw_cd;
+static const float BOMB_RADIUS = 14, BOMB_POWER = 70, BOMB_FUSE = 1.6f;
+
+static void spray(Vector3 c, int n, Color col, float speed, float life, float size) {
+    for (int i = 0; i < n; i++) {
+        Vector3 d = Vector3Normalize(Vector3{ frand() - 0.5f, frand() - 0.3f, frand() - 0.5f });
+        float k = 0.7f + 0.3f * frand();
+        Particle p;
+        p.p = c;
+        p.v = Vector3Scale(d, speed * (0.3f + 0.7f * frand()));
+        p.c = Color{ (unsigned char)(col.r * k), (unsigned char)(col.g * k), (unsigned char)(col.b * k), 255 };
+        p.life = life * (0.5f + 0.5f * frand());
+        p.size = size * (0.5f + frand());
+        g_parts.push_back(p);
+    }
+}
+
+static void explode(Vector3 c) {
+    char cmd[128];
+    snprintf(cmd, sizeof cmd, "explode %.2f %.2f %.2f %.1f %.1f", c.x, c.y, c.z, BOMB_RADIUS, BOMB_POWER);
+    net_send(cmd);
+    g_blasts.push_back(Blast{ c, 0 });
+    spray(c, 70, Color{ 255, 170, 60, 255 }, 22, 0.9f, 0.12f);
+    spray(c, 40, Color{ 70, 70, 72, 255 }, 9, 1.6f, 0.3f);
+    float d = Vector3Distance(c, Vector3{ g_pl.p.x, g_pl.p.y + 1, g_pl.p.z });
+    g_shake = fmaxf(g_shake, 1 - fminf(1, d / 45));
+    sound_play(SFX_BOOM, fmaxf(0.25f, 1 - d / 80), 0.1f);
+}
+
+static void throw_bomb(Vector3 from, Vector3 dir) {
+    if (g_throw_cd > 0) return;
+    g_throw_cd = 0.12f;
+    Vector3 v = Vector3Add(Vector3Scale(dir, 24), Vector3{ g_pl.v.x * 0.5f, 3 + g_pl.v.y * 0.3f, g_pl.v.z * 0.5f });
+    g_bombs.push_back(Bomb{ Vector3Add(from, Vector3Scale(dir, 0.6f)), v, 0 });
+    sound_play(SFX_DROP, 0.4f, 0.2f);
+}
+
+static bool solid_at(Vector3 p) {
+    uint32_t s = g_world.get((int)floorf(p.x), (int)floorf(p.y), (int)floorf(p.z));
+    return s && (g_world.p(s).flags & F_COL);
+}
+
+static void update_bombs(float dt) {
+    g_throw_cd = fmaxf(0, g_throw_cd - dt);
+    g_shake = fmaxf(0, g_shake - dt * 2.5f);
+    for (auto &b : g_blasts) b.t += dt;
+    std::erase_if(g_blasts, [](const Blast &b) { return b.t > 0.6f; });
+    for (size_t i = 0; i < g_bombs.size();) {
+        Bomb &b = g_bombs[i];
+        b.t += dt;
+        bool boom = b.t >= BOMB_FUSE;
+        int n = (int)fmaxf(1, ceilf(Vector3Length(b.v) * dt / 0.2f));
+        for (int k = 0; k < n && !boom; k++) {
+            float h = dt / n;
+            b.v.y -= 32 * h;
+            Vector3 step = Vector3Scale(b.v, h);
+            BodyHit bh;
+            float len = Vector3Length(step);
+            if (len > 1e-5f && g_bodies.pick(b.p, Vector3Scale(step, 1 / len), len + 0.2f, &bh)) {
+                b.p = bh.point;
+                boom = true;
+                break;
+            }
+            /* 按轴走，碰到方块就在那个轴上反弹 */
+            float *P = &b.p.x, *V = &b.v.x, *S = &step.x;
+            for (int a = 0; a < 3; a++) {
+                float old = P[a];
+                P[a] += S[a];
+                if (solid_at(b.p)) {
+                    P[a] = old;
+                    V[a] *= -0.35f;
+                    for (int o = 0; o < 3; o++)
+                        if (o != a) V[o] *= 0.75f;
+                }
+            }
+        }
+        if (b.p.y < -70) boom = true;
+        if (boom) {
+            Vector3 c = b.p;
+            g_bombs.erase(g_bombs.begin() + (long)i);
+            explode(c);
+        } else i++;
+    }
+}
+
+static void draw_bombs(const Camera3D &cam) {
+    for (auto &b : g_bombs) {
+        DrawSphere(b.p, 0.17f, Color{ 40, 40, 44, 255 });
+        float rate = 4 + b.t * 14;
+        if (sinf(b.t * rate * 2 * PI) > 0) DrawSphere(Vector3Add(b.p, Vector3{ 0, 0.17f, 0 }), 0.06f, Color{ 255, 40, 30, 255 });
+    }
+    /* 火球：柔边光团，迅速胀大再暗下去 */
+    for (auto &b : g_blasts) {
+        float u = b.t / 0.6f, k = (1 - u) * (1 - u);
+        float r = BOMB_RADIUS * 0.6f * sqrtf(fminf(1, b.t / 0.2f));
+        render_glow(cam, b.p, r, Color{ 255, 120, 40, (unsigned char)(255 * k) });
+        render_glow(cam, b.p, r * 0.45f, Color{ 255, 230, 180, (unsigned char)(255 * k) });
+    }
+}
+
+/* 爆炸照亮周围：取最新的一团火球当点光源 */
+static Vector4 blast_light() {
+    Vector4 l{ 0, 0, 0, 0 };
+    for (auto &b : g_blasts) {
+        float k = 1 - b.t / 0.6f;
+        if (k * k * 6 > l.w) l = Vector4{ b.p.x, b.p.y, b.p.z, k * k * 6 };
+    }
+    return l;
+}
+
 /* 相机朝向的变换：x 右、y 上、z 后 */
 static Matrix view_basis(Vector3 pos, Vector3 f) {
     Vector3 r = Vector3Normalize(Vector3CrossProduct(f, Vector3{ 0, 1, 0 })), u = Vector3CrossProduct(r, f);
@@ -262,7 +384,7 @@ static Matrix view_basis(Vector3 pos, Vector3 f) {
 /* 物品栏、放置                                                        */
 /* ================================================================== */
 
-enum Place { P_GUN, P_AXIS, P_COG, P_GEARBOX, P_FACING, P_HAXIS, P_PLAIN };
+enum Place { P_GUN, P_AXIS, P_COG, P_GEARBOX, P_FACING, P_HAXIS, P_PLAIN, P_BOMB };
 struct Slot {
     const char *label, *block;
     Place place;
@@ -289,7 +411,7 @@ static const Slot SLOTS[2][10] = {
         { "机壳齿轮", "create:andesite_encased_cogwheel", P_AXIS, { 160, 155, 140, 255 } },
         { "木板", "minecraft:oak_planks", P_PLAIN, { 175, 140, 85, 255 } },
         { "玻璃", "minecraft:glass", P_PLAIN, { 190, 220, 230, 255 } },
-        { "泥土", "minecraft:dirt", P_PLAIN, { 125, 90, 60, 255 } },
+        { "炸弹", nullptr, P_BOMB, { 200, 45, 30, 255 } },
         { "圆石", "minecraft:cobblestone", P_PLAIN, { 115, 115, 115, 255 } },
         { "铁块", "minecraft:iron_block", P_PLAIN, { 210, 210, 210, 255 } },
     },
@@ -391,6 +513,10 @@ static void draw_held(const Slot &slot, Vector3 cam, Vector3 f, float t, bool ho
         float glow = 0.6f + 0.4f * sinf(t * (holding ? 18.f : 3.f));
         DrawSphere(Vector3Transform(Vector3{ 0, 0, -0.25f }, MatrixMultiply(base, vb)), 0.028f,
                    Color{ 120, 235, 255, (unsigned char)(150 + 100 * glow) });
+    } else if (slot.place == P_BOMB) {
+        Vector3 c = Vector3Transform(Vector3{ 0.3f + sx, -0.28f + sy, -0.62f }, vb);
+        DrawSphere(c, 0.09f, Color{ 40, 40, 44, 255 });
+        if (sinf(t * 8) > 0) DrawSphere(Vector3Add(c, Vector3{ 0, 0.09f, 0 }), 0.03f, Color{ 255, 40, 30, 255 });
     } else {
         Vector3 at{ 0.34f + sx, -0.32f + sy - sw * 0.08f, -0.6f - sw * 0.1f };
         Matrix local = MatrixMultiply(MatrixMultiply(MatrixScale(0.26f, 0.26f, 0.26f), MatrixRotateY(0.75f + sw * 0.3f)),
@@ -411,6 +537,12 @@ static void tri(Vector2 a, Vector2 b, Vector2 c, Color col) {
 }
 
 static void draw_icon(const Slot &s, float cx, float cy) {
+    if (s.place == P_BOMB) {
+        DrawCircle((int)cx, (int)cy + 2, 10, Color{ 45, 45, 50, 255 });
+        DrawRectangle((int)cx - 3, (int)cy - 12, 6, 5, Color{ 90, 90, 95, 255 });
+        DrawCircle((int)cx + 4, (int)cy - 13, 2, s.color);
+        return;
+    }
     if (s.place == P_GUN) {
         DrawRectanglePro(Rectangle{ cx - 14, cy - 5, 28, 10 }, Vector2{ 0, 0 }, 0, Color{ 80, 85, 95, 255 });
         DrawRectangle((int)cx - 10, (int)cy + 4, 7, 10, Color{ 50, 50, 55, 255 });
@@ -552,6 +684,7 @@ static const char *HELP[] = {
     "物理枪（第 1 格）：按住左键抓结构，转视角拖它，滚轮调远近，",
     "    松开扔出去；抓着时右键冻结，对冻结的结构右键解冻",
     "R 在看着的地方召唤一个物理结构   Esc 打开这个菜单",
+    "G（按住连扔）或第 2 页的炸弹：扔炸弹，把附近的物理结构炸飞",
 };
 
 int main(int argc, char **argv) {
@@ -647,6 +780,7 @@ int main(int argc, char **argv) {
             for (int k = 0; k < 10; k++)
                 if (IsKeyPressed(KEY_ZERO + k)) g_sel = (k + 9) % 10;
             if (IsKeyPressed(KEY_R)) spawn_at_look(1);
+            if (IsKeyDown(KEY_G)) throw_bomb(eye(), look_dir());
             Hit hit;
             bool has_hit = g_world.ready() && raycast_block(eye(), look_dir(), 8, &hit);
             if ((IsKeyPressed(KEY_LEFT_BRACKET) || IsKeyPressed(KEY_RIGHT_BRACKET)) && has_hit) {
@@ -665,7 +799,10 @@ int main(int argc, char **argv) {
             }
             if (g_sel != prev_sel || g_page != prev_page) sound_play(SFX_CLICK, 0.3f, 0.02f);
             const Slot &slot = SLOTS[g_page][g_sel];
-            if (slot.place == P_GUN) {
+            if (slot.place == P_BOMB) {
+                release();
+                if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) throw_bomb(eye(), look_dir());
+            } else if (slot.place == P_GUN) {
                 BodyHit bh;
                 if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && g_bodies.pick(eye(), look_dir(), 40, &bh)) {
                     g_held = Held{ true, bh.id, bh.dist };
@@ -736,6 +873,7 @@ int main(int argc, char **argv) {
 
         /* ---------- 画 ---------- */
         update_particles(dt);
+        update_bombs(dt);
         sound_update(dt, g_held.on);
         /* 走路晃动、跑步时视野变宽 */
         float hspeed = sqrtf(g_pl.v.x * g_pl.v.x + g_pl.v.z * g_pl.v.z);
@@ -754,6 +892,8 @@ int main(int argc, char **argv) {
         Vector3 right = Vector3Normalize(Vector3CrossProduct(look, Vector3{ 0, 1, 0 }));
         Vector3 cpos = Vector3Add(eye(), Vector3Add(Vector3Scale(right, sinf(phase) * 0.04f * g_bob),
                                                     Vector3{ 0, (0.035f - fabsf(cosf(phase)) * 0.07f) * g_bob, 0 }));
+        if (g_shake > 0) cpos = Vector3Add(cpos, Vector3{ (frand() - 0.5f) * g_shake * 0.35f, (frand() - 0.5f) * g_shake * 0.35f, (frand() - 0.5f) * g_shake * 0.35f });
+        g_flash = blast_light();
         Camera3D cam = {};
         cam.position = cpos;
         cam.target = Vector3Add(cpos, look);
@@ -781,6 +921,7 @@ int main(int argc, char **argv) {
         rlEnableBackfaceCulling();
         g_bodies.draw(false);
         for (auto &p : g_parts) DrawCube(p.p, p.size, p.size, p.size, p.c);
+        draw_bombs(cam);
         if (has_hit) {
             float b[6];
             if (g_world.full(hit.s) || g_world.p(hit.s).kind != K_CUBE || g_world.p(hit.s).box[3] <= g_world.p(hit.s).box[0])
@@ -928,8 +1069,29 @@ int main(int argc, char **argv) {
             if (atoi(shot_env) > 0) net_send(cmd);
             shot_spawned = true;
         }
+        /* 测试炸弹（MCC_CLIENT_BOMB=1）：往结构堆里连扔几个 */
+        static bool shot_bomb = getenv("MCC_CLIENT_BOMB") != nullptr;
+        if (screenshot && shot_bomb && first_data >= 0 && now - first_data > 4.5 && now - first_data < 5.5 && !g_bodies.map.empty()) {
+            Vector3 c{};
+            int n = 0;
+            for (auto &kv : g_bodies.map)
+                if (kv.second.visible) c = Vector3Add(c, kv.second.pos), n++;
+            if (n) {
+                c = Vector3Scale(c, 1.f / n);
+                Vector3 d = Vector3Normalize(Vector3Subtract(c, eye()));
+                g_pl.yaw = atan2f(-d.x, -d.z);
+                g_pl.pitch = asinf(d.y);
+                Vector3 aim = Vector3Normalize(Vector3Add(d, Vector3{ 0, 0.55f, 0 }));
+                throw_bomb(eye(), aim);
+            }
+        }
+        if (shot_bomb && screenshot && first_data >= 0 && ((!g_blasts.empty() && g_blasts.back().t > 0.12f) || now - first_data > 60)) {
+            printf("帧率 %d  结构方块 %zu  炸弹已爆 %zu\n", fps, g_bodies.block_count(), g_blasts.size());
+            TakeScreenshot("mcc_client_shot.png");
+            break;
+        }
         /* 测试物理枪：看向一个结构抓住它 */
-        if (screenshot && first_data >= 0 && !g_held.on && now - first_data > 5 && now - first_data < 5.5) {
+        if (screenshot && !shot_bomb && first_data >= 0 && !g_held.on && now - first_data > 5 && now - first_data < 5.5) {
             for (auto &kv : g_bodies.map) {
                 if (!kv.second.visible) continue;
                 Vector3 d = Vector3Normalize(Vector3Subtract(kv.second.pos, eye()));
@@ -946,7 +1108,7 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        if (screenshot && first_data >= 0 && now - first_data > 8) {
+        if (screenshot && !shot_bomb && first_data >= 0 && now - first_data > 8) {
             printf("帧率 %d  结构方块 %zu\n", fps, g_bodies.block_count());
             TakeScreenshot("mcc_client_shot.png");
             break;

@@ -13,8 +13,9 @@
  *   4 移除结构  i32 id
  *   5 推进统计  f32 最低 TPS, f32 平均 TPS, f32 平均每刻毫秒, f32 最慢一刻毫秒, u32 区域数, u32 醒着的结构, u32 结构总数
  *              （每秒一次；平均与最慢都按这一秒内所有区域的每一刻实际耗时算）
- * 命令（文本）：spawn <x> <z> <数量> | clear | push <id> <x> <y> <z> <vx> <vy> <vz>
+ * 命令（文本）：spawn <x> <z> <数量> | clear | push <id> <x> <y> <z> <vx> <vy> <vz> | explode <x> <y> <z> <半径> <威力>
  *   push：在世界点 (x,y,z) 给结构一个冲量，使其速度改变 (vx,vy,vz) 格/秒（按质量折算）
+ *   explode：半径内的结构获得向外的速度变化，中心处为"威力"格/秒，按到结构表面的距离平方衰减
  */
 #ifndef MCC_VIEWER_H
 #define MCC_VIEWER_H

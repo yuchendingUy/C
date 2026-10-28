@@ -785,6 +785,52 @@ static void task_push(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
     free(q);
 }
 
+/* 爆炸：半径内的结构按距离衰减获得一个向外（略偏上）的速度变化，离得近的还会被打转 */
+typedef struct { double p[3], radius, power; } explode_req;
+
+static void task_explode(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
+    (void)cx;
+    (void)cz;
+    explode_req *q = (explode_req*)arg;
+    mcc_region_world *w = r ? (mcc_region_world*)r->data : NULL;
+    if (w && w->phys) {
+        uint32_t it = 0;
+        phys_body *b;
+        uint64_t seed = (uint64_t)(q->p[0] * 131 + q->p[2] * 7919);
+        int hit = 0;
+        while (phys_scene_next_body(w->phys, &it, &b)) {
+            if (b3Body_GetType(b->body) != b3_dynamicBody) continue; /* 冻结的不动 */
+            b3Pos c = b3Body_GetPosition(b->body);
+            double d[3] = { c.x - q->p[0], c.y - q->p[1], c.z - q->p[2] };
+            double dist = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            /* 大结构按离它表面的距离算 */
+            double half = 0;
+            if (b->has_bounds)
+                for (int k = 0; k < 3; k++) half += (double)(b->bmax[k] - b->bmin[k] + 1) * (b->bmax[k] - b->bmin[k] + 1);
+            double eff = dist - sqrt(half) * 0.5;
+            if (eff < 0) eff = 0;
+            if (eff >= q->radius) continue;
+            double f = 1 - eff / q->radius;
+            f *= f;
+            double dir[3];
+            if (dist < 1e-6) { dir[0] = 0; dir[1] = 1; dir[2] = 0; }
+            else for (int k = 0; k < 3; k++) dir[k] = d[k] / dist;
+            dir[1] += 0.35;
+            double n = sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+            double m = b3Body_GetMass(b->body), dv = q->power * f;
+            double imp[3] = { dir[0] / n * dv * m, dir[1] / n * dv * m, dir[2] / n * dv * m };
+            /* 冲量打在离质心有点偏的地方，结构会翻着飞出去 */
+            seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+            double off[3] = { ((seed >> 20) & 1023) / 1023.0 - 0.5, ((seed >> 30) & 1023) / 1023.0 - 0.5, ((seed >> 40) & 1023) / 1023.0 - 0.5 };
+            double pt[3] = { c.x + off[0], c.y + off[1], c.z + off[2] };
+            phys_body_apply_world_impulse(w->phys, b->id, pt, imp);
+            hit++;
+        }
+        mcc_info("爆炸 (%.1f, %.1f, %.1f)：炸飞 %d 个结构", q->p[0], q->p[1], q->p[2], hit);
+    }
+    free(q);
+}
+
 /* ---- 方块操作：在拥有该位置的区域线程上执行 ---- */
 
 typedef struct {
@@ -901,7 +947,14 @@ static void handle_command(mcc_viewer *v, client *cl, const char *cmd) {
     int off = 0;
     int32_t id;
     double p3[3];
-    if (sscanf(cmd, "push %d %lf %lf %lf %lf %lf %lf", &pr.id, &pr.p[0], &pr.p[1], &pr.p[2], &pr.dv[0], &pr.dv[1], &pr.dv[2]) == 7) {
+    explode_req er;
+    if (sscanf(cmd, "explode %lf %lf %lf %lf %lf", &er.p[0], &er.p[1], &er.p[2], &er.radius, &er.power) == 5) {
+        /* 只影响爆炸点所在区域里的结构；调试服整片地形是一个区域 */
+        er.radius = MCC_MIN(MCC_MAX(er.radius, 1.0), 64.0);
+        er.power = MCC_MIN(MCC_MAX(er.power, 0.0), 200.0);
+        explode_req *q = (explode_req*)memcpy(mcc_xmalloc(sizeof er), &er, sizeof er);
+        if (!mcc_regionizer_queue_chunk_task(&v->lv->rz, (int32_t)floor(er.p[0]) >> 4, (int32_t)floor(er.p[2]) >> 4, task_explode, q)) free(q);
+    } else if (sscanf(cmd, "push %d %lf %lf %lf %lf %lf %lf", &pr.id, &pr.p[0], &pr.p[1], &pr.p[2], &pr.dv[0], &pr.dv[1], &pr.dv[2]) == 7) {
         push_req *q = (push_req*)mcc_xmalloc(sizeof *q);
         *q = pr;
         if (!mcc_regionizer_queue_chunk_task(&v->lv->rz, (int32_t)floor(pr.p[0]) >> 4, (int32_t)floor(pr.p[2]) >> 4, task_push, q)) free(q);
