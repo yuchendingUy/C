@@ -45,12 +45,13 @@ struct Bodies {
     bool handle(const uint8_t *m, size_t n, double now_ms);
     void clear();
     void interpolate(double now_ms);
-    void draw();
+    void draw(bool depth_only);
     bool pick(Vector3 o, Vector3 d, float max_dist, BodyHit *out) const;
     size_t block_count() const;
 };
 
 void bodies_init();
+extern Vector3 g_view_pos; /* 相机位置（雾、水面反光用） */
 
 } // namespace mcc::client
 

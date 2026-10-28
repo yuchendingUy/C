@@ -59,26 +59,64 @@ static volatile sig_atomic_t g_quit;
 static void on_signal(int s) { (void)s; g_quit = 1; }
 
 static mcc_level *g_lv;
-static mcc_state_t STONE, DIRT, GRASS, WATER, SAND, PLANKS, LOG, GLASS, WOOL, IRON;
+static mcc_state_t STONE, WATER, PLANKS, LOG, GLASS, WOOL, IRON;
+static mcc_state_t FLOOR, PILLAR, CEILING, LAMP, RACK, BOX, PAINT, HAZARD;
 
-/* 平地：草皮 y=64；中间偏东一个 24×24、深 10 的水池 */
+/* ---- 地形：一个空旷的室内大厅（仓库） ----
+ * 地面 y=64，天花板 y=100，四周有墙。每 32 格一根 2×2 的柱子，天花板下每 16 格一盏灯
+ * （客户端按同样的布局算灯光，见 src/client/render.cpp），南北两侧是几排货架，
+ * 中间空出来放演示机器和水池。 */
+static constexpr int32_t HALL_MIN = -AREA * 16, HALL_MAX = AREA * 16 - 1, CEIL_Y = 100;
+
+static uint32_t hash2(int32_t x, int32_t z, uint32_t seed) {
+    uint64_t h = mcc_hash64(((uint64_t)(uint32_t)x << 32 | (uint32_t)z) ^ ((uint64_t)seed << 17));
+    return (uint32_t)(h >> 32);
+}
+static int32_t mod(int32_t a, int32_t m) { return ((a % m) + m) % m; }
+static bool in_pool(int32_t x, int32_t z) { return x >= 8 && x < 32 && z >= -12 && z < 12; }
+static bool pillar_at(int32_t x, int32_t z) { return mod(x, 32) / 2 == 8 && mod(z, 32) / 2 == 8; }
+static bool lamp_at(int32_t x, int32_t z) { return mod(x, 16) == 0 && mod(z, 16) == 0 && !pillar_at(x, z); }
+
+/* 货架：沿 x 一排排，每排 2 格深，排间留 6 格过道；每 4 格一根立柱，4 层隔板 */
+static mcc_state_t rack_at(int32_t x, int32_t y, int32_t z) {
+    int32_t az = z < 0 ? -z - 1 : z;
+    if (az < 40 || az > 87 || x < -84 || x > 83 || mod(x + 84, 28) >= 24) return 0;
+    int32_t row = mod(az - 40, 8);
+    if (row >= 2 || y <= 64 || y > 81) return 0;
+    int32_t lv = (y - 65) % 4;
+    if (lv == 3) return RACK;                       /* 隔板 */
+    if (mod(x, 4) == 0) return RACK;                /* 立柱 */
+    /* 箱子：隔板上随机放，高 1~3 格 */
+    uint32_t r = hash2(x / 2, (y - 65) / 4 * 1000 + az, 5);
+    return lv < (int32_t)(r % 4) ? BOX : 0;
+}
+
 static mcc_state_t terrain_at(int32_t x, int32_t y, int32_t z) {
-    bool pool = x >= 8 && x < 32 && z >= -12 && z < 12;
-    if (pool) {
-        if (y < 52) return STONE;
-        if (y < 54) return SAND;
-        if (y < 64) return WATER;
-        return 0;
+    bool wall = x == HALL_MIN || x == HALL_MAX || z == HALL_MIN || z == HALL_MAX;
+    if (y >= CEIL_Y) return y <= CEIL_Y + 1 ? CEILING : 0;
+    if (y > 64) {
+        if (wall || pillar_at(x, z)) return PILLAR;
+        if (y == CEIL_Y - 1 && lamp_at(x, z)) return LAMP;
+        return rack_at(x, y, z);
     }
-    if (y < 60) return STONE;
-    if (y < 64) return DIRT;
-    if (y == 64) return GRASS;
-    return 0;
+    if (in_pool(x, z)) {
+        if (y < 52) return STONE;
+        if (y < 54) return PILLAR;
+        return y < 64 ? WATER : 0;
+    }
+    if (y < 56) return y >= 52 ? STONE : 0;
+    if (y < 64) return STONE;
+    /* 地面标线：水池一圈黄黑警示条，货架区边上一条黄线 */
+    bool ring = x >= 7 && x <= 32 && z >= -13 && z <= 12;
+    if (ring) return mod(x + z, 4) < 2 ? PAINT : HAZARD;
+    int32_t az = z < 0 ? -z - 1 : z;
+    if (az == 37 && x > -86 && x < 86) return PAINT;
+    return FLOOR;
 }
 
 static mcc_chunk *make_chunk(const mcc_chunk_store *dims, int32_t cx, int32_t cz) {
     mcc_chunk *c = mcc_chunk_new(dims, cx, cz);
-    for (int32_t y = 40; y <= 64; y++)
+    for (int32_t y = 52; y <= CEIL_Y + 1; y++)
         for (int lz = 0; lz < 16; lz++)
             for (int lx = 0; lx < 16; lx++) {
                 mcc_state_t s = terrain_at((cx << 4) + lx, y, (cz << 4) + lz);
@@ -226,12 +264,17 @@ int main(int argc, char **argv) {
     if (!mcc::create::create_init(g_data)) return 1;
     if (getenv("MCC_NO_CANON")) phys_set_canonical(false);
     STONE = mcc_block_default_state("stone");
-    DIRT = mcc_block_default_state("dirt");
-    GRASS = mcc_block_default_state("grass_block");
     WATER = mcc_block_default_state("water");
-    SAND = mcc_block_default_state("sand");
     PLANKS = mcc_block_default_state("oak_planks");
     LOG = mcc_block_default_state("oak_log");
+    FLOOR = mcc_block_default_state("gray_concrete");
+    PILLAR = mcc_block_default_state("light_gray_concrete");
+    CEILING = mcc_block_default_state("black_concrete");
+    LAMP = mcc_block_default_state("sea_lantern");
+    RACK = mcc_block_default_state("orange_concrete");
+    BOX = mcc_block_default_state("brown_wool");
+    PAINT = mcc_block_default_state("yellow_concrete");
+    HAZARD = mcc_block_default_state("black_concrete");
     GLASS = mcc_block_default_state("glass");
     WOOL = mcc_block_default_state("white_wool");
     IRON = mcc_block_default_state("iron_block");

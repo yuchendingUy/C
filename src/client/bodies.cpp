@@ -1,8 +1,10 @@
 #include "bodies.h"
+#include "render.h"
 #include "raymath.h"
 #include "rlgl.h"
 #include <math.h>
 #include <string.h>
+#include <string>
 
 namespace mcc::client {
 
@@ -21,24 +23,44 @@ layout(location = 2) in vec3 iCenter;
 layout(location = 3) in vec4 iQuat;
 layout(location = 4) in vec4 iColor;
 uniform mat4 mvp;
+out vec3 vPos;
+out vec3 vNor;
 out vec3 vCol;
+out vec3 vLocal;
+out vec3 vLocalN;
 vec3 qrot(vec4 q, vec3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v); }
 void main() {
-    vec3 n = qrot(iQuat, aNor);
-    vec3 l = normalize(vec3(0.35, 1.0, 0.25));
-    float s = 0.62 + 0.38 * max(dot(n, l), 0.0) - (n.y < -0.5 ? 0.12 : 0.0);
-    vCol = iColor.rgb * s;
-    gl_Position = mvp * vec4(iCenter + qrot(iQuat, aPos), 1.0);
+    vNor = qrot(iQuat, aNor);
+    vPos = iCenter + qrot(iQuat, aPos);
+    vCol = iColor.rgb;
+    vLocal = aPos + 0.5;
+    vLocalN = aNor;
+    gl_Position = mvp * vec4(vPos, 1.0);
 }
 )";
-static const char *FS = R"(#version 330
+static const char *FS_MAIN = R"(
+in vec3 vPos;
+in vec3 vNor;
 in vec3 vCol;
+in vec3 vLocal;
+in vec3 vLocalN;
 out vec4 fragColor;
-void main() { fragColor = vec4(vCol, 1.0); }
+void main() {
+    vec3 base = blockTexture(vCol, vLocal, vLocalN, 0.0);
+    vec3 a = abs(vLocalN);
+    vec2 f = a.x > 0.5 ? vLocal.zy : a.y > 0.5 ? vLocal.xz : vLocal.xy;
+    float e = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y));
+    if (e < 1.0 / 16.0) base *= 0.82;   /* 结构的方块描边重一点，看得清形状 */
+    vec3 c = lighting(base, vPos, normalize(vNor), 1.0, true);
+    fragColor = vec4(applyFog(c, vPos, 1.0), 1.0);
+}
+)";
+static const char *FS_DEPTH = R"(#version 330
+void main() {}
 )";
 
-static unsigned g_shader, g_vao, g_cube_vbo, g_inst_vbo;
-static int g_mvp_loc;
+static Shader g_lit, g_depth;
+static unsigned g_vao, g_cube_vbo, g_inst_vbo;
 static size_t g_inst_cap;
 static std::vector<Instance> g_inst;
 
@@ -54,8 +76,10 @@ static void set_instance_attribs() {
 }
 
 void bodies_init() {
-    g_shader = rlLoadShaderCode(VS, FS);
-    g_mvp_loc = rlGetLocationUniform(g_shader, "mvp");
+    std::string fs = std::string("#version 330\n") + LIGHT_GLSL + FS_MAIN;
+    g_lit = LoadShaderFromMemory(VS, fs.c_str());
+    g_depth = LoadShaderFromMemory(VS, FS_DEPTH);
+    render_set_common(g_lit);
     /* 边长 1、中心在原点的立方体：36 个顶点（位置 + 法线） */
     static const float F[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
     std::vector<float> v;
@@ -84,6 +108,8 @@ void bodies_init() {
     set_instance_attribs();
     rlDisableVertexArray();
 }
+
+Vector3 g_view_pos;
 
 template <class T> static T rd(const uint8_t *p) { T v; memcpy(&v, p, sizeof v); return v; }
 
@@ -193,7 +219,7 @@ size_t Bodies::block_count() const {
 }
 
 /* 一次实例化绘制画出全部结构的全部方块 */
-void Bodies::draw() {
+void Bodies::draw(bool depth_only) {
     g_inst.clear();
     for (auto &kv : map) {
         const Body &b = kv.second;
@@ -219,11 +245,25 @@ void Bodies::draw() {
         set_instance_attribs();
     }
     rlUpdateVertexBuffer(g_inst_vbo, g_inst.data(), (int)(g_inst.size() * sizeof(Instance)), 0);
-    rlEnableShader(g_shader);
-    rlSetUniformMatrix(g_mvp_loc, MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+    Shader &sh = depth_only ? g_depth : g_lit;
+    rlEnableShader(sh.id);
+    rlSetUniformMatrix(GetShaderLocation(sh, "mvp"), MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+    if (!depth_only) {
+        Vector3 cam = g_view_pos;
+        rlSetUniform(GetShaderLocation(sh, "viewPos"), &cam, RL_SHADER_UNIFORM_VEC3, 1);
+        rlSetUniformMatrix(GetShaderLocation(sh, "lightVP"), g_render.light_vp);
+        int slot = 1;
+        rlActiveTextureSlot(1);
+        rlEnableTexture(render_shadow_texture());
+        rlSetUniform(GetShaderLocation(sh, "texture1"), &slot, RL_SHADER_UNIFORM_INT, 1);
+    }
     rlDisableBackfaceCulling();
     rlDrawVertexArrayInstanced(0, 36, (int)g_inst.size());
     rlEnableBackfaceCulling();
+    if (!depth_only) {
+        rlDisableTexture();
+        rlActiveTextureSlot(0);
+    }
     rlDisableShader();
     rlDisableVertexArray();
 }

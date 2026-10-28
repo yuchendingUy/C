@@ -9,6 +9,8 @@
 #include "font.h"
 #include "net.h"
 #include "process.h"
+#include "render.h"
+#include "sound.h"
 #include "world.h"
 
 #include "raylib.h"
@@ -20,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <vector>
 
 using namespace mcc::client;
 
@@ -40,13 +43,16 @@ static void text(const char *s, float x, float y, float size, Color c) {
 
 static Vector2 measure(const char *s, float size) { return MeasureTextEx(font_get(s), s, size, 0); }
 
+/* 界面配色：半条命那种琥珀色 */
+static const Color HUD{ 255, 206, 72, 255 }, HUD_DIM{ 255, 206, 72, 140 }, HUD_BG{ 0, 0, 0, 105 };
+
 /* 半透明底的多行文字框 */
 static void panel(const std::string &s, float x, float y, float size, bool right_align = false) {
     Vector2 m = measure(s.c_str(), size);
     float w = m.x + 20, h = m.y + 12;
     if (right_align) x -= w;
-    DrawRectangleRounded(Rectangle{ x, y, w, h }, 0.12f, 6, Color{ 0, 0, 0, 115 });
-    text(s.c_str(), x + 10, y + 6, size, WHITE);
+    DrawRectangleRounded(Rectangle{ x, y, w, h }, 0.12f, 6, HUD_BG);
+    text(s.c_str(), x + 10, y + 6, size, HUD);
 }
 
 /* ================================================================== */
@@ -196,6 +202,63 @@ static bool raycast_block(Vector3 o, Vector3 d, float max_dist, Hit *h) {
 }
 
 /* ================================================================== */
+/* 手感：走路晃动、碎块粒子、手里的东西、物品栏图标                     */
+/* ================================================================== */
+
+struct Particle {
+    Vector3 p, v;
+    Color c;
+    float life, size;
+};
+static std::vector<Particle> g_parts;
+static float g_walk, g_bob, g_fov = 72, g_swing;
+static uint32_t g_rng = 99;
+static float frand() {
+    g_rng ^= g_rng << 13; g_rng ^= g_rng >> 17; g_rng ^= g_rng << 5;
+    return (g_rng & 0xFFFFFF) / (float)0xFFFFFF;
+}
+
+static void break_particles(int x, int y, int z, Color c) {
+    for (int i = 0; i < 28; i++) {
+        float k = 0.65f + 0.35f * frand();
+        Particle p;
+        p.p = Vector3{ x + 0.15f + 0.7f * frand(), y + 0.15f + 0.7f * frand(), z + 0.15f + 0.7f * frand() };
+        p.v = Vector3{ (frand() - 0.5f) * 4, frand() * 4 + 1, (frand() - 0.5f) * 4 };
+        p.c = Color{ (unsigned char)(c.r * k), (unsigned char)(c.g * k), (unsigned char)(c.b * k), 255 };
+        p.life = 0.6f + 0.5f * frand();
+        p.size = 0.07f + 0.07f * frand();
+        g_parts.push_back(p);
+    }
+}
+
+static void update_particles(float dt) {
+    for (auto &p : g_parts) {
+        p.v.y -= 22 * dt;
+        Vector3 n = Vector3Add(p.p, Vector3Scale(p.v, dt));
+        uint32_t s = g_world.get((int)floorf(n.x), (int)floorf(n.y - p.size / 2), (int)floorf(n.z));
+        if (s && g_world.full(s)) {
+            p.v = Vector3Scale(p.v, 0.3f);
+            p.v.y = 0;
+            n = Vector3{ p.p.x, p.p.y, p.p.z };
+        }
+        p.p = n;
+        p.life -= dt;
+    }
+    std::erase_if(g_parts, [](const Particle &p) { return p.life <= 0; });
+}
+
+/* 相机朝向的变换：x 右、y 上、z 后 */
+static Matrix view_basis(Vector3 pos, Vector3 f) {
+    Vector3 r = Vector3Normalize(Vector3CrossProduct(f, Vector3{ 0, 1, 0 })), u = Vector3CrossProduct(r, f);
+    Matrix m = MatrixIdentity();
+    m.m0 = r.x; m.m1 = r.y; m.m2 = r.z;
+    m.m4 = u.x; m.m5 = u.y; m.m6 = u.z;
+    m.m8 = -f.x; m.m9 = -f.y; m.m10 = -f.z;
+    m.m12 = pos.x; m.m13 = pos.y; m.m14 = pos.z;
+    return m;
+}
+
+/* ================================================================== */
 /* 物品栏、放置                                                        */
 /* ================================================================== */
 
@@ -306,6 +369,80 @@ static void place(const Slot &slot, const Hit &hit, bool sneak) {
     net_send(cmd);
 }
 
+/* 手里的东西画在镜头右下角，走路时跟着晃，放拆时挥一下 */
+static void draw_held(const Slot &slot, Vector3 cam, Vector3 f, float t, bool holding) {
+    float phase = g_walk * PI / 1.8f;
+    float sx = sinf(phase) * 0.025f * g_bob, sy = -fabsf(cosf(phase)) * 0.03f * g_bob;
+    float sw = sinf(g_swing * PI);
+    Matrix vb = view_basis(cam, f);
+    rlDisableDepthTest();
+    if (slot.place == P_GUN) {
+        /* 物理枪：枪身、握把、发光的枪口 */
+        Vector3 at{ 0.32f + sx, -0.3f + sy - sw * 0.04f, -0.78f };
+        Matrix base = MatrixMultiply(MatrixMultiply(MatrixScale(0.7f, 0.7f, 0.7f), MatrixRotateY(0.1f)), MatrixTranslate(at.x, at.y, at.z));
+        auto part = [&](Vector3 c, Vector3 s, Color col) {
+            world_draw_item(g_render.lit_mat, nullptr, col, MatrixMultiply(MatrixMultiply(MatrixScale(s.x, s.y, s.z), MatrixTranslate(c.x, c.y, c.z)),
+                                                                          MatrixMultiply(base, vb)));
+        };
+        part({ 0, 0, 0 }, { 0.09f, 0.1f, 0.34f }, Color{ 70, 75, 85, 255 });
+        part({ 0, -0.09f, 0.1f }, { 0.06f, 0.14f, 0.07f }, Color{ 45, 45, 50, 255 });
+        part({ 0, 0.065f, -0.02f }, { 0.05f, 0.03f, 0.22f }, Color{ 34, 180, 210, 255 });
+        part({ 0, 0, -0.2f }, { 0.06f, 0.06f, 0.08f }, Color{ 90, 95, 105, 255 });
+        float glow = 0.6f + 0.4f * sinf(t * (holding ? 18.f : 3.f));
+        DrawSphere(Vector3Transform(Vector3{ 0, 0, -0.25f }, MatrixMultiply(base, vb)), 0.028f,
+                   Color{ 120, 235, 255, (unsigned char)(150 + 100 * glow) });
+    } else {
+        Vector3 at{ 0.34f + sx, -0.32f + sy - sw * 0.08f, -0.6f - sw * 0.1f };
+        Matrix local = MatrixMultiply(MatrixMultiply(MatrixScale(0.26f, 0.26f, 0.26f), MatrixRotateY(0.75f + sw * 0.3f)),
+                                      MatrixRotateX(0.15f - sw * 0.6f));
+        world_draw_item(g_render.lit_mat, slot.block, slot.color, MatrixMultiply(MatrixMultiply(local, MatrixTranslate(at.x, at.y, at.z)), vb));
+    }
+    rlEnableDepthTest();
+}
+
+static Color scale_color(Color c, float k) {
+    return Color{ (unsigned char)fminf(255, c.r * k), (unsigned char)fminf(255, c.g * k), (unsigned char)fminf(255, c.b * k), c.a };
+}
+
+/* 两面都画，不用管三角形绕向 */
+static void tri(Vector2 a, Vector2 b, Vector2 c, Color col) {
+    DrawTriangle(a, b, c, col);
+    DrawTriangle(a, c, b, col);
+}
+
+static void draw_icon(const Slot &s, float cx, float cy) {
+    if (s.place == P_GUN) {
+        DrawRectanglePro(Rectangle{ cx - 14, cy - 5, 28, 10 }, Vector2{ 0, 0 }, 0, Color{ 80, 85, 95, 255 });
+        DrawRectangle((int)cx - 10, (int)cy + 4, 7, 10, Color{ 50, 50, 55, 255 });
+        DrawRectangle((int)cx - 12, (int)cy - 8, 20, 3, s.color);
+        DrawCircle((int)cx + 15, (int)cy, 4, Color{ 150, 240, 255, 255 });
+        return;
+    }
+    std::string b = s.block;
+    if (b == "create:shaft") {
+        DrawRectanglePro(Rectangle{ cx, cy, 6, 26 }, Vector2{ 3, 13 }, 45, scale_color(s.color, 0.8f));
+        DrawRectanglePro(Rectangle{ cx, cy, 3, 26 }, Vector2{ 2, 13 }, 45, s.color);
+        return;
+    }
+    if (b == "create:cogwheel" || b == "create:large_cogwheel") {
+        float r = b == "create:cogwheel" ? 9 : 12;
+        int teeth = b == "create:cogwheel" ? 8 : 12;
+        Color dark = scale_color(s.color, 0.75f);
+        for (int i = 0; i < teeth; i++)
+            DrawRectanglePro(Rectangle{ cx, cy, 5, 2 * r + 6 }, Vector2{ 2.5f, r + 3 }, 180.f * i / teeth, dark);
+        DrawCircle((int)cx, (int)cy, r, s.color);
+        DrawCircle((int)cx, (int)cy, 3, Color{ 181, 181, 174, 255 });
+        return;
+    }
+    /* 其余：斜着看的小方块，三个面三种亮度 */
+    float h = 11;
+    Vector2 top{ cx, cy - h }, l{ cx - h, cy - h / 2 }, r{ cx + h, cy - h / 2 }, c{ cx, cy };
+    Vector2 lb{ cx - h, cy + h / 2 }, rb{ cx + h, cy + h / 2 }, bot{ cx, cy + h };
+    tri(top, l, c, s.color); tri(top, c, r, s.color);
+    tri(l, lb, bot, scale_color(s.color, 0.78f)); tri(l, bot, c, scale_color(s.color, 0.78f));
+    tri(c, bot, rb, scale_color(s.color, 0.6f)); tri(c, rb, r, scale_color(s.color, 0.6f));
+}
+
 /* ================================================================== */
 /* 服务端回复                                                          */
 /* ================================================================== */
@@ -368,19 +505,23 @@ static void spawn_at_look(int n) {
 }
 
 static void release() {
-    if (g_held.on) net_send("release");
+    if (g_held.on) {
+        net_send("release");
+        sound_play(SFX_DROP, 0.6f);
+    }
     g_held.on = false;
 }
 
-static bool button(const char *label, float x, float y, float w, float h, bool primary) {
-    Rectangle r{ x, y, w, h };
-    bool hover = CheckCollisionPointRec(GetMousePosition(), r);
-    Color bg = primary ? (hover ? Color{ 66, 153, 225, 255 } : Color{ 49, 130, 206, 255 })
-                       : (hover ? Color{ 74, 85, 104, 255 } : Color{ 55, 65, 81, 255 });
-    DrawRectangleRounded(r, 0.2f, 6, bg);
-    Vector2 m = measure(label, 20);
-    text(label, x + (w - m.x) / 2, y + (h - m.y) / 2, 20, WHITE);
-    return hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+/* 菜单项：左边一列文字，鼠标移上去变亮、前面出一个小三角 */
+static bool menu_item(const char *label, float x, float y, bool enabled = true) {
+    Vector2 m = measure(label, 26);
+    Rectangle r{ x - 24, y - 4, m.x + 48, m.y + 8 };
+    bool hover = enabled && CheckCollisionPointRec(GetMousePosition(), r);
+    if (hover) DrawTriangle(Vector2{ x - 18, y + 7 }, Vector2{ x - 18, y + 23 }, Vector2{ x - 8, y + 15 }, HUD);
+    text(label, x, y, 26, !enabled ? Color{ 120, 120, 120, 255 } : hover ? HUD : Color{ 215, 215, 210, 255 });
+    bool click = hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+    if (click) sound_play(SFX_CLICK, 0.5f, 0.02f);
+    return click;
 }
 
 static const char *HELP[] = {
@@ -404,9 +545,10 @@ int main(int argc, char **argv) {
     InitWindow(1280, 760, "mcc 测试客户端");
     SetExitKey(KEY_NULL);
     font_init(22, PRELOAD);
+    render_init();
     world_init_meshes();
     bodies_init();
-    Material mat = LoadMaterialDefault();
+    sound_init();
 
     bool menu = true, started_server = false, ever_connected = false, was_up = false, attempting = false;
     double next_try = 0, last_space = -1, info_at = 0, stat_at = GetTime();
@@ -416,12 +558,13 @@ int main(int argc, char **argv) {
     std::string status = "连接中…";
     int64_t info_key = INT64_MIN;
     std::vector<Message> inbox;
-    /* 测试用：MCC_CLIENT_SHOT=N 连上后召唤 N 个结构，过几秒截图退出 */
+    /* 测试用：MCC_CLIENT_SHOT=N 连上后召唤 N 个结构，过几秒截图退出（=menu 时截菜单） */
     const char *shot_env = getenv("MCC_CLIENT_SHOT");
     bool screenshot = shot_env != nullptr, shot_spawned = false;
     double first_data = -1;
 
-    while (!WindowShouldClose()) {
+    bool quit = false;
+    while (!WindowShouldClose() && !quit) {
         double now = GetTime();
         float dt = fminf(0.05f, GetFrameTime());
 
@@ -481,6 +624,7 @@ int main(int argc, char **argv) {
             }
             if (IsKeyPressed(KEY_F)) g_pl.fly = !g_pl.fly;
             if (IsKeyPressed(KEY_TAB)) g_page ^= 1;
+            int prev_sel = g_sel, prev_page = g_page;
             for (int k = 0; k < 10; k++)
                 if (IsKeyPressed(KEY_ZERO + k)) g_sel = (k + 9) % 10;
             if (IsKeyPressed(KEY_R)) spawn_at_look(1);
@@ -496,11 +640,13 @@ int main(int argc, char **argv) {
                 if (g_held.on) g_held.dist = Clamp(g_held.dist * expf(wheel * 0.15f), 2, 40);
                 else g_sel = (g_sel + (wheel < 0 ? 1 : 9)) % 10;
             }
+            if (g_sel != prev_sel || g_page != prev_page) sound_play(SFX_CLICK, 0.3f, 0.02f);
             const Slot &slot = SLOTS[g_page][g_sel];
             if (slot.place == P_GUN) {
                 BodyHit bh;
                 if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && g_bodies.pick(eye(), look_dir(), 40, &bh)) {
                     g_held = Held{ true, bh.id, bh.dist };
+                    sound_play(SFX_GRAB, 0.6f);
                     char cmd[128];
                     snprintf(cmd, sizeof cmd, "grab %d %.3f %.3f %.3f", bh.id, bh.point.x, bh.point.y, bh.point.z);
                     net_send(cmd);
@@ -511,10 +657,13 @@ int main(int argc, char **argv) {
                         Vector3 p = Vector3Add(eye(), Vector3Scale(look_dir(), g_held.dist));
                         snprintf(cmd, sizeof cmd, "freeze %d %.2f %.2f %.2f", g_held.id, p.x, p.y, p.z);
                         net_send(cmd);
-                        release();
+                        g_held.on = false;
+                        net_send("release");
+                        sound_play(SFX_FREEZE, 0.5f);
                     } else if (g_bodies.pick(eye(), look_dir(), 40, &bh)) {
                         snprintf(cmd, sizeof cmd, "freeze %d %.2f %.2f %.2f", bh.id, bh.point.x, bh.point.y, bh.point.z);
                         net_send(cmd);
+                        sound_play(SFX_FREEZE, 0.5f);
                     }
                 }
                 if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) release();
@@ -524,7 +673,15 @@ int main(int argc, char **argv) {
                     char cmd[96];
                     snprintf(cmd, sizeof cmd, "break %d %d %d", hit.x, hit.y, hit.z);
                     net_send(cmd);
-                } else if (has_hit && hit.face >= 0 && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) place(slot, hit, sneak);
+                    const PalEntry &e = g_world.p(hit.s);
+                    break_particles(hit.x, hit.y, hit.z, Color{ e.r, e.g, e.b, 255 });
+                    sound_play(SFX_BREAK, 0.7f);
+                    g_swing = 1;
+                } else if (has_hit && hit.face >= 0 && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+                    place(slot, hit, sneak);
+                    sound_play(SFX_PLACE, 0.8f);
+                    g_swing = 1;
+                }
             }
             step_player(dt);
         }
@@ -554,61 +711,106 @@ int main(int argc, char **argv) {
         g_bodies.interpolate(now_ms);
 
         /* ---------- 画 ---------- */
+        update_particles(dt);
+        sound_update(dt, g_held.on);
+        /* 走路晃动、跑步时视野变宽 */
+        float hspeed = sqrtf(g_pl.v.x * g_pl.v.x + g_pl.v.z * g_pl.v.z);
+        bool walking = g_pl.on_ground && !g_pl.fly && !menu;
+        if (walking) {
+            float before = g_walk;
+            g_walk += hspeed * dt;
+            if (floorf(before / 1.8f) != floorf(g_walk / 1.8f)) sound_play(SFX_STEP, 0.35f, 0.15f);
+        }
+        g_bob += ((walking ? fminf(hspeed / 4.3f, 1.3f) : 0.f) - g_bob) * fminf(1, dt * 8);
+        bool sprint = IsKeyDown(KEY_LEFT_CONTROL) && hspeed > 3;
+        g_fov += ((sprint ? 80.f : g_pl.fly && hspeed > 8 ? 78.f : 72.f) - g_fov) * fminf(1, dt * 6);
+        g_swing = fmaxf(0, g_swing - dt * 4);
+        float phase = g_walk * PI / 1.8f;
+        Vector3 look = look_dir();
+        Vector3 right = Vector3Normalize(Vector3CrossProduct(look, Vector3{ 0, 1, 0 }));
+        Vector3 cpos = Vector3Add(eye(), Vector3Add(Vector3Scale(right, sinf(phase) * 0.04f * g_bob),
+                                                    Vector3{ 0, (0.035f - fabsf(cosf(phase)) * 0.07f) * g_bob, 0 }));
         Camera3D cam = {};
-        cam.position = eye();
-        cam.target = Vector3Add(eye(), look_dir());
+        cam.position = cpos;
+        cam.target = Vector3Add(cpos, look);
         cam.up = Vector3{ 0, 1, 0 };
-        cam.fovy = 72;
+        cam.fovy = g_fov;
         cam.projection = CAMERA_PERSPECTIVE;
+        g_view_pos = cpos;
+        render_frame(cpos, (float)now);
 
         BeginDrawing();
-        ClearBackground(Color{ 156, 196, 232, 255 });
-        BeginMode3D(cam);
-        g_world.draw(mat);
+        /* 阴影：从太阳方向把会投影的东西画进深度图 */
+        render_shadow_begin(g_pl.p);
+        g_world.draw(g_render.depth_mat);
         rlDisableBackfaceCulling();
-        g_world.draw_kinetics(mat, now);
+        g_world.draw_kinetics(g_render.depth_mat, now);
+        g_bodies.draw(true);
+        render_shadow_end();
         rlEnableBackfaceCulling();
-        g_bodies.draw();
+
+        ClearBackground(render_fog_color());
+        BeginMode3D(cam);
+        g_world.draw(g_render.lit_mat);
+        rlDisableBackfaceCulling();
+        g_world.draw_kinetics(g_render.lit_mat, now);
+        rlEnableBackfaceCulling();
+        g_bodies.draw(false);
+        for (auto &p : g_parts) DrawCube(p.p, p.size, p.size, p.size, p.c);
         if (has_hit) {
             float b[6];
             if (g_world.full(hit.s) || g_world.p(hit.s).kind != K_CUBE || g_world.p(hit.s).box[3] <= g_world.p(hit.s).box[0])
                 memcpy(b, FULL_BOX, sizeof b);
             else box_of(hit.s, b);
             DrawCubeWiresV(Vector3{ hit.x + (b[0] + b[3]) / 2, hit.y + (b[1] + b[4]) / 2, hit.z + (b[2] + b[5]) / 2 },
-                           Vector3{ b[3] - b[0] + 0.006f, b[4] - b[1] + 0.006f, b[5] - b[2] + 0.006f }, Color{ 17, 17, 17, 255 });
+                           Vector3{ b[3] - b[0] + 0.006f, b[4] - b[1] + 0.006f, b[5] - b[2] + 0.006f }, Color{ 20, 20, 20, 200 });
         }
         if (g_held.on) {
+            /* 物理枪的光束：从枪口到抓取点，一闪一闪 */
             Vector3 t = Vector3Add(eye(), Vector3Scale(look_dir(), g_held.dist));
-            Vector3 from = Vector3Add(Vector3Add(eye(), Vector3Scale(look_dir(), 0.6f)), Vector3{ 0, -0.25f, 0 });
-            DrawLine3D(from, t, Color{ 34, 211, 238, 255 });
-            DrawSphere(t, 0.06f, Color{ 34, 211, 238, 255 });
+            Matrix vb = view_basis(cpos, look);
+            Vector3 from = Vector3Transform(Vector3{ 0.3f, -0.3f, -0.96f }, vb);
+            float pulse = 0.5f + 0.5f * sinf((float)now * 18);
+            DrawCylinderEx(from, t, 0.035f, 0.02f, 8, Color{ 34, 211, 238, (unsigned char)(50 + 40 * pulse) });
+            DrawCylinderEx(from, t, 0.012f, 0.008f, 6, Color{ 200, 250, 255, 255 });
+            DrawSphere(t, 0.08f + 0.03f * pulse, Color{ 120, 235, 255, 200 });
         }
         rlDisableBackfaceCulling();
-        g_world.draw_water(mat);
+        g_world.draw_water(g_render.lit_mat);
         rlEnableBackfaceCulling();
+        render_lamp_glow(cam);
+        if (!menu) draw_held(SLOTS[g_page][g_sel], cpos, look, (float)now, g_held.on);
         EndMode3D();
 
         int W = GetScreenWidth(), H = GetScreenHeight();
+        /* 四周压暗一点 */
+        DrawRectangleGradientV(0, 0, W, H / 3, Color{ 0, 0, 0, 90 }, Color{ 0, 0, 0, 0 });
+        DrawRectangleGradientV(0, H - H / 3, W, H / 3, Color{ 0, 0, 0, 0 }, Color{ 0, 0, 0, 100 });
+        DrawRectangleGradientH(0, 0, W / 4, H, Color{ 0, 0, 0, 80 }, Color{ 0, 0, 0, 0 });
+        DrawRectangleGradientH(W - W / 4, 0, W / 4, H, Color{ 0, 0, 0, 0 }, Color{ 0, 0, 0, 80 });
         /* 准星 */
-        DrawRectangle(W / 2 - 1, H / 2 - 9, 2, 18, WHITE);
-        DrawRectangle(W / 2 - 9, H / 2 - 1, 18, 2, WHITE);
+        Vector2 cc{ W / 2.f, H / 2.f };
+        DrawCircleV(cc, 1.6f, HUD);
+        DrawRing(cc, 10, 11.5f, 120, 240, 16, HUD_DIM);
+        DrawRing(cc, 10, 11.5f, -60, 60, 16, HUD_DIM);
 
         /* 物品栏 */
-        const float sw = 78, sh = 54, gap = 4;
+        const float sw = 78, sh = 64, gap = 4;
         float x0 = W / 2.f - (10 * sw + 9 * gap) / 2, y0 = H - sh - 14;
         for (int i = 0; i < 10; i++) {
             const Slot &s = SLOTS[g_page][i];
-            Rectangle r{ x0 + i * (sw + gap), y0, sw, sh };
             bool cur = i == g_sel;
-            DrawRectangleRounded(r, 0.15f, 6, cur ? Color{ 0, 0, 0, 170 } : Color{ 0, 0, 0, 115 });
-            DrawRectangleRoundedLinesEx(r, 0.15f, 6, 2, cur ? Color{ 255, 211, 77, 255 } : Color{ 255, 255, 255, 64 });
+            Rectangle r{ x0 + i * (sw + gap), y0 - (cur ? 4.f : 0.f), sw, sh };
+            DrawRectangleRounded(r, 0.15f, 6, cur ? Color{ 20, 18, 12, 190 } : HUD_BG);
+            DrawRectangleRoundedLinesEx(r, 0.15f, 6, cur ? 2 : 1, cur ? HUD : Color{ 255, 206, 72, 40 });
             char num[4];
             snprintf(num, sizeof num, "%d", (i + 1) % 10);
-            text(num, r.x + 5, r.y + 3, 14, Color{ 255, 255, 255, 170 });
-            DrawRectangle((int)(r.x + sw / 2 - 12), (int)(r.y + 10), 24, 10, s.color);
-            Vector2 m = measure(s.label, 16);
-            text(s.label, r.x + (sw - m.x) / 2, r.y + 26, 16, WHITE);
+            text(num, r.x + 5, r.y + 3, 13, HUD_DIM);
+            draw_icon(s, r.x + sw / 2, r.y + 23);
+            Vector2 m = measure(s.label, 15);
+            text(s.label, r.x + (sw - m.x) / 2, r.y + 43, 15, cur ? HUD : Color{ 200, 200, 195, 255 });
         }
+        if (g_page) text("第 2 页（Tab）", x0, y0 - 30, 15, HUD_DIM);
 
         /* 左上：手里拿的、看着的方块 */
         {
@@ -664,28 +866,36 @@ int main(int argc, char **argv) {
             panel(s, (float)W - 10, 10, 16, true);
         }
 
-        /* 菜单 */
+        /* 菜单：压暗画面，左边标题和一列菜单项，右下角操作说明 */
         if (menu) {
-            DrawRectangle(0, 0, W, H, Color{ 10, 20, 30, 150 });
-            float bw = 640, bh = 420, bx = (W - bw) / 2, by = (H - bh) / 2;
-            DrawRectangleRounded(Rectangle{ bx, by, bw, bh }, 0.04f, 8, Color{ 31, 42, 55, 245 });
-            text("mcc 测试客户端", bx + 26, by + 20, 30, WHITE);
-            for (size_t i = 0; i < sizeof HELP / sizeof *HELP; i++)
-                text(HELP[i], bx + 26, by + 70 + i * 28.f, 18, Color{ 232, 238, 245, 255 });
-            float yb = by + bh - 70;
-            if (!net_connected()) text(status.c_str(), bx + 26, yb - 34, 18, Color{ 255, 211, 77, 255 });
-            if (button(net_connected() ? "开始" : "等待连接", bx + 26, yb, 110, 44, true) && net_connected()) {
+            DrawRectangle(0, 0, W, H, Color{ 0, 0, 0, 170 });
+            DrawRectangleGradientH(0, 0, W / 2, H, Color{ 0, 0, 0, 140 }, Color{ 0, 0, 0, 0 });
+            float mx = W * 0.08f, my = H * 0.3f;
+            text("MCC", mx, my - 96, 56, Color{ 235, 235, 230, 255 });
+            text("测试客户端", mx + 4, my - 30, 20, HUD_DIM);
+            float y = my + 30;
+            if (!net_connected()) {
+                text(status.c_str(), mx, y, 20, HUD);
+                y += 50;
+            }
+            if (menu_item(net_connected() ? "开始" : "等待连接…", mx, y, net_connected())) {
                 menu = false;
                 DisableCursor();
             }
-            if (button("召唤 1 个", bx + 146, yb, 100, 44, false)) spawn_at_look(1);
-            if (button("召唤 20 个", bx + 256, yb, 110, 44, false)) spawn_at_look(20);
-            if (button("召唤 100 个", bx + 376, yb, 120, 44, false)) spawn_at_look(100);
-            if (button("清空结构", bx + 506, yb, 108, 44, false)) net_send("clear");
+            if (menu_item("召唤 1 个结构", mx, y += 44)) spawn_at_look(1);
+            if (menu_item("召唤 20 个", mx, y += 44)) spawn_at_look(20);
+            if (menu_item("召唤 100 个", mx, y += 44)) spawn_at_look(100);
+            if (menu_item("清空结构", mx, y += 44)) net_send("clear");
+            if (menu_item("退出", mx, y += 60)) quit = true;
+            float hy = H - 30 - (sizeof HELP / sizeof *HELP) * 24.f;
+            for (size_t i = 0; i < sizeof HELP / sizeof *HELP; i++) {
+                Vector2 m = measure(HELP[i], 16);
+                text(HELP[i], W - 40 - m.x, hy + i * 24.f, 16, Color{ 170, 170, 165, 255 });
+            }
         }
         EndDrawing();
 
-        if (screenshot && first_data >= 0) menu = false;
+        if (screenshot && first_data >= 0 && strcmp(shot_env, "menu") != 0) menu = false;
         if (screenshot && first_data >= 0 && !shot_spawned && now - first_data > 1) {
             char cmd[64];
             snprintf(cmd, sizeof cmd, "spawn 0 25 %d", atoi(shot_env));
@@ -719,7 +929,7 @@ int main(int argc, char **argv) {
 
     net_shutdown();
     stop_server();
-    UnloadMaterial(mat);
+    sound_close();
     CloseWindow();
     return 0;
 }

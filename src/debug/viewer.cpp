@@ -179,7 +179,9 @@ static void base64(const uint8_t *in, size_t n, char *out) {
 
 static void build_colors(mcc_viewer *v) {
     static const struct { const char *key; uint8_t r, g, b; } T[] = {
-        { "water", 50, 110, 220 }, { "lava", 230, 100, 20 }, { "grass_block", 95, 160, 65 }, { "dirt", 125, 90, 60 },
+        { "water", 50, 110, 220 }, { "light_gray_concrete", 120, 120, 114 }, { "gray_concrete", 66, 68, 72 },
+        { "black_concrete", 24, 25, 28 }, { "orange_concrete", 214, 98, 22 }, { "yellow_concrete", 222, 176, 34 },
+        { "sea_lantern", 255, 248, 230 }, { "brown_wool", 172, 132, 88 }, { "lava", 230, 100, 20 }, { "grass_block", 95, 160, 65 }, { "dirt", 125, 90, 60 },
         { "sand", 220, 205, 150 }, { "gravel", 135, 130, 125 }, { "deepslate", 75, 75, 82 }, { "stone", 128, 128, 128 },
         { "cobblestone", 115, 115, 115 }, { "planks", 175, 140, 85 }, { "log", 110, 85, 50 }, { "leaves", 60, 120, 40 },
         { "glass", 190, 220, 230 }, { "wool", 230, 230, 230 }, { "iron", 210, 210, 210 }, { "gold", 240, 200, 60 },
@@ -264,6 +266,7 @@ static void build_palette(mcc_viewer *v) {
         put_u8(b, flags);
         uint8_t kind = render_kind(s), axis = 0, facing = 0;
         if (KineticBlock *kb = kinetic_block(s)) axis = (uint8_t)kb->rotation_axis(s);
+        else if (const char *a = mcc_state_prop_index(s, "axis") >= 0 ? mcc_state_get_str(s, "axis") : nullptr) axis = (uint8_t)(a[0] - 'x');
         if (kind == K_MOTOR) facing = (uint8_t)((CreativeMotorBlock &)mcc::state_behaviour(s)).facing_of(s);
         put_u8(b, kind);
         put_u8(b, axis);

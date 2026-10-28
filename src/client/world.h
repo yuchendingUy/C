@@ -49,6 +49,7 @@ struct World {
     std::unordered_map<int64_t, Chunk> chunks;
     std::unordered_map<int64_t, uint32_t> kinetics;   /* 坐标键 → 状态 */
     std::unordered_map<int64_t, float> speeds;        /* 坐标键 → 转速 RPM */
+    std::vector<uint8_t> style;                       /* 状态 → 材质样式（render.h 的 STYLE_*） */
 
     static int64_t ckey(int32_t cx, int32_t cz) { return ((int64_t)cx << 32) ^ (uint32_t)cz; }
     static int64_t pkey(int32_t x, int32_t y, int32_t z) {
@@ -68,6 +69,7 @@ struct World {
     /* 处理服务端消息；返回 true 表示认得 */
     bool handle(const uint8_t *m, size_t n);
     void clear();
+    void compute_styles();
     /* 每帧最多重建几个区块的网格 */
     void rebuild(int budget);
     void draw(Material &mat);
@@ -76,6 +78,7 @@ struct World {
 };
 
 void world_init_meshes();
+void world_draw_item(Material &mat, const char *block, Color c, Matrix m);
 
 } // namespace mcc::client
 
