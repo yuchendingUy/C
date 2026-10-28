@@ -126,6 +126,11 @@ double phys_scene_gravity_scale(phys_scene *s);
 void phys_body_apply_impulse_torque(phys_scene *s, int32_t id, const double local_impulse[3], const double local_torque[3], bool wake);
 void phys_body_get_linear_velocity(phys_scene *s, int32_t id, double out[3]);
 void phys_body_get_angular_velocity(phys_scene *s, int32_t id, double out[3]);
+/* 直接设速度（并唤醒），物理枪拖动用 */
+void phys_body_set_velocities(phys_scene *s, int32_t id, const double lin[3], const double ang[3]);
+/* 冻结：变成静止刚体，不受力、不下落；解冻恢复为动态 */
+void phys_body_set_frozen(phys_scene *s, int32_t id, bool frozen);
+bool phys_body_frozen(phys_scene *s, int32_t id);
 
 /* ---- 碰撞上报 ---- */
 /* 取出并清空上报的碰撞（最多 100 条，与 Sable 一致） */

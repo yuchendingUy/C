@@ -33,12 +33,24 @@ MCC_INLINE void redstone_update_output_signal(Space &, BlockPos, mcc_block_t) {}
 /* TODO(掉落物)：原版 Block.dropResources —— 按战利品表掉落物品 */
 MCC_INLINE void drops_drop_resources(Space &, BlockPos, mcc_state_t, BlockEntity *) {}
 
-/* TODO(网络)：原版 Level.sendBlockUpdated —— 把方块变化发给附近客户端 */
-MCC_INLINE void net_block_updated(Space &, BlockPos, mcc_state_t, mcc_state_t, int) {}
+/* TODO(网络)：正式的网络协议还没做。现在调试客户端（src/debug/viewer）在这里挂钩子，
+ * 收方块变化和方块实体数据；没挂钩子时什么都不做 */
+struct NetHooks {
+    void (*block_updated)(Space &sp, BlockPos pos, mcc_state_t old, mcc_state_t now, int flags);
+    void (*block_entity_data)(BlockEntity *be);
+};
+extern NetHooks g_net_hooks;
+
+/* 原版 Level.sendBlockUpdated —— 把方块变化发给附近客户端 */
+MCC_INLINE void net_block_updated(Space &sp, BlockPos p, mcc_state_t old, mcc_state_t now, int flags) {
+    if (g_net_hooks.block_updated) g_net_hooks.block_updated(sp, p, old, now, flags);
+}
 /* TODO(网络)：原版 Level.levelEvent（2001 = 方块破坏粒子与音效）*/
 MCC_INLINE void net_level_event(Space &, int, BlockPos, int) {}
-/* TODO(网络)：机械动力 SmartBlockEntity.sendData —— 方块实体数据发给客户端 */
-MCC_INLINE void net_block_entity_data(BlockEntity *) {}
+/* 机械动力 SmartBlockEntity.sendData —— 方块实体数据发给客户端 */
+MCC_INLINE void net_block_entity_data(BlockEntity *be) {
+    if (g_net_hooks.block_entity_data) g_net_hooks.block_entity_data(be);
+}
 
 /* TODO(流体)：原版含水方块 updateShape 里的 scheduleTick(流体) */
 MCC_INLINE void fluid_schedule_tick(Space &, BlockPos) {}

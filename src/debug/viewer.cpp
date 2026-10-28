@@ -1,5 +1,9 @@
 #include "viewer.h"
 #include "../core/log.h"
+#include "../game/game.h"
+#include "../game/pending.h"
+#include "../create/kinetics/blocks.h"
+#include "../phys/colliders.h"
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -75,7 +79,31 @@ struct mcc_viewer {
     mcc_viewer_spawn_fn spawn;
     void *ctx;
     uint8_t *colors;            /* 每个方块状态的 RGB */
+    bytes palette;              /* 调色板消息（启动时生成一次） */
+    bytes names;                /* 方块名表消息 */
+    /* 待发的动力部件转速（推进时收集，每刻发一次）：坐标键 → kin 下标 + 1 */
+    mcc_hmap kin_index;
+    MCC_VEC(struct kin_update) kin;
+    /* 物理枪：每个客户端最多抓一个结构 */
+    MCC_VEC(struct grab) grabs;
 };
+
+typedef struct kin_update {
+    int32_t x, y, z;
+    float speed;
+    uint8_t flags;              /* 1 超载 */
+} kin_update;
+
+typedef struct grab {
+    uint32_t client;
+    int32_t body;
+    bool has_local;             /* 抓取点已换算成结构局部坐标 */
+    double hit[3];              /* 抓住时的世界坐标 */
+    double local[3];            /* 抓取点（相对质心，结构局部系） */
+    double target[3];           /* 抓取点要去的位置 */
+} grab;
+
+static mcc_viewer *g_viewer;    /* 网络钩子用（调试服务端只有一个） */
 
 /* ------------------------------------------------------------------ */
 /* 小工具：字节缓冲、SHA-1、Base64                                     */
@@ -93,6 +121,7 @@ static void put(bytes *b, const void *p, size_t n) {
 }
 static void put_u8(bytes *b, uint8_t v) { put(b, &v, 1); }
 static void put_i16(bytes *b, int16_t v) { put(b, &v, 2); }
+static void put_u16(bytes *b, uint16_t v) { put(b, &v, 2); }
 static void put_i32(bytes *b, int32_t v) { put(b, &v, 4); }
 static void put_u32(bytes *b, uint32_t v) { put(b, &v, 4); }
 static void put_f32(bytes *b, float v) { put(b, &v, 4); }
@@ -173,6 +202,98 @@ static void build_colors(mcc_viewer *v) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 调色板：客户端画方块、算碰撞、认机械动力部件用                       */
+/* ------------------------------------------------------------------ */
+
+/* 渲染种类（客户端按它画转动的部件） */
+enum {
+    K_CUBE = 0, K_SHAFT, K_COG, K_LARGE_COG, K_ENCASED_SHAFT, K_GEARBOX, K_SPLIT, K_CHAIN, K_MOTOR, K_CONTROLLER,
+    K_ENCASED_COG, K_ENCASED_LARGE_COG,
+};
+
+static void create_colors(mcc_viewer *v) {
+    static const struct { const char *name; uint8_t r, g, b; } T[] = {
+        { "create:shaft", 175, 175, 170 }, { "create:cogwheel", 160, 115, 65 }, { "create:large_cogwheel", 150, 105, 60 },
+        { "create:andesite_encased_shaft", 160, 155, 140 }, { "create:brass_encased_shaft", 205, 160, 75 },
+        { "create:andesite_encased_cogwheel", 160, 155, 140 }, { "create:brass_encased_cogwheel", 205, 160, 75 },
+        { "create:andesite_encased_large_cogwheel", 160, 155, 140 }, { "create:brass_encased_large_cogwheel", 205, 160, 75 },
+        { "create:gearbox", 160, 155, 140 }, { "create:clutch", 160, 155, 140 }, { "create:gearshift", 160, 155, 140 },
+        { "create:encased_chain_drive", 160, 155, 140 }, { "create:adjustable_chain_gearshift", 200, 165, 90 },
+        { "create:creative_motor", 165, 80, 200 }, { "create:rotation_speed_controller", 205, 160, 75 },
+    };
+    for (size_t i = 0; i < MCC_ARRAY_LEN(T); i++) {
+        int32_t b = mcc_block_by_name(T[i].name);
+        if (b < 0) continue;
+        const mcc_block_def *d = &mcc_blocks.blocks[b];
+        for (uint32_t s = 0; s < d->state_count; s++) {
+            uint8_t *c = v->colors + (d->first_state + s) * 3;
+            c[0] = T[i].r; c[1] = T[i].g; c[2] = T[i].b;
+        }
+    }
+}
+
+static uint8_t render_kind(mcc_state_t s) {
+    static const struct { const char *name; uint8_t kind; } T[] = {
+        { "create:shaft", K_SHAFT }, { "create:cogwheel", K_COG }, { "create:large_cogwheel", K_LARGE_COG },
+        { "create:andesite_encased_shaft", K_ENCASED_SHAFT }, { "create:brass_encased_shaft", K_ENCASED_SHAFT },
+        { "create:andesite_encased_cogwheel", K_ENCASED_COG }, { "create:brass_encased_cogwheel", K_ENCASED_COG },
+        { "create:andesite_encased_large_cogwheel", K_ENCASED_LARGE_COG },
+        { "create:brass_encased_large_cogwheel", K_ENCASED_LARGE_COG },
+        { "create:gearbox", K_GEARBOX }, { "create:clutch", K_SPLIT }, { "create:gearshift", K_SPLIT },
+        { "create:encased_chain_drive", K_CHAIN }, { "create:adjustable_chain_gearshift", K_CHAIN },
+        { "create:creative_motor", K_MOTOR }, { "create:rotation_speed_controller", K_CONTROLLER },
+    };
+    const char *name = mcc_state_def(s)->name;
+    for (size_t i = 0; i < MCC_ARRAY_LEN(T); i++)
+        if (!strcmp(name, T[i].name)) return T[i].kind;
+    return K_CUBE;
+}
+
+/* 消息 10：u32 n，n × { rgb, 标志, 种类, 轴, 朝向, 碰撞外框 6 字节（0~16） }
+ *   标志：1 空气，2 整块，4 流体，8 有碰撞 */
+static void build_palette(mcc_viewer *v) {
+    using namespace mcc::create;
+    bytes *b = &v->palette;
+    put_u8(b, 10);
+    put_u32(b, mcc_blocks.state_count);
+    for (uint32_t s = 0; s < mcc_blocks.state_count; s++) {
+        put(b, v->colors + s * 3, 3);
+        uint8_t pf = mcc_state_pflags(s);
+        uint8_t flags = (uint8_t)((mcc_state_is_air(s) ? 1 : 0) | (pf & MCC_PHYS_FULL ? 2 : 0) |
+                                  (mcc_state_fluid(s) ? 4 : 0) | (pf & MCC_PHYS_SOLID ? 8 : 0));
+        put_u8(b, flags);
+        uint8_t kind = render_kind(s), axis = 0, facing = 0;
+        if (KineticBlock *kb = kinetic_block(s)) axis = (uint8_t)kb->rotation_axis(s);
+        if (kind == K_MOTOR) facing = (uint8_t)((CreativeMotorBlock &)mcc::state_behaviour(s)).facing_of(s);
+        put_u8(b, kind);
+        put_u8(b, axis);
+        put_u8(b, facing);
+        float lo[3] = { 1, 1, 1 }, hi[3] = { 0, 0, 0 };
+        const phys_collider *col = phys_collider_get(mcc_state_collider(s));
+        if (col && !col->fluid)
+            for (int i = 0; i < col->nboxes; i++)
+                for (int k = 0; k < 3; k++) {
+                    lo[k] = MCC_MIN(lo[k], col->boxes[i].min[k]);
+                    hi[k] = MCC_MAX(hi[k], col->boxes[i].max[k]);
+                }
+        for (int k = 0; k < 3; k++) put_u8(b, hi[k] > lo[k] ? (uint8_t)lroundf(lo[k] * 16) : 0);
+        for (int k = 0; k < 3; k++) put_u8(b, hi[k] > lo[k] ? (uint8_t)lroundf(hi[k] * 16) : 0);
+    }
+    /* 消息 12：方块名表 u32 n，n × { u32 首状态, u32 状态数, u8 长度, 名字 } */
+    bytes *nb = &v->names;
+    put_u8(nb, 12);
+    put_u32(nb, mcc_blocks.block_count);
+    for (uint32_t i = 0; i < mcc_blocks.block_count; i++) {
+        const mcc_block_def *d = &mcc_blocks.blocks[i];
+        put_u32(nb, d->first_state);
+        put_u32(nb, d->state_count);
+        size_t n = MCC_MIN(strlen(d->name), (size_t)255);
+        put_u8(nb, (uint8_t)n);
+        put(nb, d->name, n);
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* 向客户端发数据（调用方持 v->lock）                                  */
 /* ------------------------------------------------------------------ */
 
@@ -210,65 +331,133 @@ typedef struct region_stat {
 
 typedef struct { mcc_viewer *v; uint32_t client; } terrain_req;
 
+/* 消息 8：动力部件转速 u32 n，n × { i32 x, y, z, f32 转速, u8 标志（1 超载） } */
+static void put_kin(bytes *b, int32_t x, int32_t y, int32_t z, float speed, uint8_t flags) {
+    put_i32(b, x);
+    put_i32(b, y);
+    put_i32(b, z);
+    put_f32(b, speed);
+    put_u8(b, flags);
+}
+
+/* 消息 9：一个区块的全部方块（按列压缩）：i32 cx, i32 cz，
+ * 然后 256 列（z 外层、x 内层），每列 u8 段数，每段 { i16 起始 y, u16 长度, u16 状态 }（只发非空气） */
 static void task_terrain(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
     terrain_req *q = (terrain_req*)arg;
     if (r) {
         mcc_region_world *w = (mcc_region_world*)r->data;
-        const mcc_chunk *c = mcc_store_chunk(w->chunks, cx, cz);
+        mcc_chunk *c = mcc_store_chunk(w->chunks, cx, cz);
         if (c) {
             bytes b = { 0 };
-            put_u8(&b, 1);
+            put_u8(&b, 9);
             put_i32(&b, cx);
             put_i32(&b, cz);
-            size_t count_at = b.len;
-            put_u32(&b, 0);
-            uint32_t n = 0;
-            for (int i = 0; i < c->nsec; i++) {
-                const mcc_chunk_section *s = c->sec[i];
-                if (!s || !s->phys) continue;
-                int32_t by = (c->min_sy + i) << 4;
-                for (int y = 0; y < 16; y++)
-                    for (int z = 0; z < 16; z++) {
-                        uint32_t row = s->phys->solid[y][z] | s->phys->liquid[y][z];
-                        while (row) {
-                            int x = __builtin_ctz(row);
-                            row &= row - 1;
-                            mcc_state_t st = mcc_section_get(s, mcc_section_index(x, y, z));
-                            bool liquid = s->phys->liquid[y][z] >> x & 1, solid = s->phys->solid[y][z] >> x & 1;
-                            /* 流体只发表面（上方不是流体） */
-                            if (liquid && !solid) {
-                                mcc_state_t up = mcc_store_get(w->chunks, (cx << 4) + x, by + y + 1, (cz << 4) + z);
-                                if (mcc_state_pflags(up) & MCC_PHYS_LIQUID) continue;
-                            }
-                            /* 露在外面的面：实心方块看邻居是不是整块；流体只画顶面 */
-                            uint8_t faces = 0;
-                            if (liquid && !solid) faces = 1 << 3;
-                            else {
-                                static const int D[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
-                                for (int f = 0; f < 6; f++) {
-                                    mcc_state_t nb = mcc_store_get(w->chunks, (cx << 4) + x + D[f][0], by + y + D[f][1], (cz << 4) + z + D[f][2]);
-                                    if (!(mcc_state_pflags(nb) & MCC_PHYS_FULL)) faces |= (uint8_t)(1 << f);
-                                }
-                            }
-                            if (!faces) continue;
-                            put_u8(&b, (uint8_t)x);
-                            put_u8(&b, (uint8_t)z);
-                            put_i16(&b, (int16_t)(by + y));
-                            put(&b, q->v->colors + st * 3, 3);
-                            put_u8(&b, (uint8_t)(faces | (liquid && !solid ? 64 : 0)));
-                            n++;
+            int32_t y0 = c->min_sy << 4, y1 = (c->min_sy + c->nsec) << 4;
+            for (int lz = 0; lz < 16; lz++)
+                for (int lx = 0; lx < 16; lx++) {
+                    size_t count_at = b.len;
+                    put_u8(&b, 0);
+                    uint8_t runs = 0;
+                    mcc_state_t cur = 0;
+                    int32_t start = 0;
+                    for (int32_t y = y0; y <= y1; y++) {
+                        mcc_state_t st = y < y1 ? mcc_chunk_get(c, lx, y, lz) : 0;
+                        if (st == cur && y < y1) continue;
+                        if (cur && runs < 255) {
+                            put_i16(&b, (int16_t)start);
+                            put_u16(&b, (uint16_t)(y - start));
+                            put_u16(&b, (uint16_t)cur);
+                            runs++;
                         }
+                        cur = st;
+                        start = y;
                     }
+                    b.data[count_at] = runs;
+                }
+            /* 区块里动力部件的当前转速 */
+            bytes k = { 0 };
+            put_u8(&k, 8);
+            put_u32(&k, 0);
+            uint32_t nk = 0;
+            if (c->ext) {
+                uint32_t it = 0;
+                void *val;
+                while (mcc_hmap_next(&((mcc::ChunkData *)c->ext)->bes, &it, NULL, &val)) {
+                    mcc::create::KineticBlockEntity *kbe = mcc::create::as_kinetic((mcc::BlockEntity *)val);
+                    if (!kbe) continue;
+                    put_kin(&k, kbe->pos.x, kbe->pos.y, kbe->pos.z, kbe->get_speed(), kbe->over_stressed ? 1 : 0);
+                    nk++;
+                }
             }
-            memcpy(b.data + count_at, &n, 4);
+            memcpy(k.data + 1, &nk, 4);
             pthread_mutex_lock(&q->v->lock);
             client *cl = find_client(q->v, q->client);
-            if (cl) ws_send(cl, b.data, b.len);
+            if (cl) {
+                ws_send(cl, b.data, b.len);
+                if (nk) ws_send(cl, k.data, k.len);
+            }
             pthread_mutex_unlock(&q->v->lock);
             mcc_vec_free(&b);
+            mcc_vec_free(&k);
         }
     }
     free(q);
+}
+
+/* ------------------------------------------------------------------ */
+/* 游戏层的网络钩子（区域线程上调用）                                   */
+/* ------------------------------------------------------------------ */
+
+/* 消息 6：方块变化 i32 x, y, z, u32 状态（只发地形，物理结构上的方块变化暂不同步） */
+static void hook_block_updated(mcc::Space &sp, mcc::BlockPos p, mcc_state_t old, mcc_state_t now, int flags) {
+    (void)old; (void)flags;
+    mcc_viewer *v = g_viewer;
+    if (!v || sp.sublevel != 0) return;
+    uint8_t msg[17] = { 6 };
+    memcpy(msg + 1, &p.x, 4);
+    memcpy(msg + 5, &p.y, 4);
+    memcpy(msg + 9, &p.z, 4);
+    uint32_t s32 = now;
+    memcpy(msg + 13, &s32, 4);
+    pthread_mutex_lock(&v->lock);
+    for (size_t i = 0; i < v->clients.len; i++) ws_send(v->clients.data[i], msg, sizeof msg);
+    pthread_mutex_unlock(&v->lock);
+}
+
+/* 机械动力 sendData：动力部件的转速变了，攒到本刻结束一起发 */
+static void hook_block_entity_data(mcc::BlockEntity *be) {
+    mcc_viewer *v = g_viewer;
+    mcc::create::KineticBlockEntity *k = mcc::create::as_kinetic(be);
+    if (!v || !k || !be->home || be->home->sublevel != 0) return;
+    uint64_t key = (uint64_t)be->pos.as_long();
+    kin_update u = { be->pos.x, be->pos.y, be->pos.z, be->removed ? 0.f : k->get_speed(), (uint8_t)(k->over_stressed ? 1 : 0) };
+    pthread_mutex_lock(&v->lock);
+    uintptr_t i = (uintptr_t)mcc_hmap_get(&v->kin_index, key);
+    if (i) v->kin.data[i - 1] = u;
+    else {
+        mcc_vec_push(&v->kin, u);
+        mcc_hmap_put(&v->kin_index, key, (void *)(uintptr_t)v->kin.len);
+    }
+    pthread_mutex_unlock(&v->lock);
+}
+
+static void flush_kinetics(mcc_viewer *v) {
+    pthread_mutex_lock(&v->lock);
+    if (v->kin.len) {
+        bytes k = { 0 };
+        put_u8(&k, 8);
+        put_u32(&k, (uint32_t)v->kin.len);
+        for (size_t i = 0; i < v->kin.len; i++) {
+            kin_update *u = &v->kin.data[i];
+            put_kin(&k, u->x, u->y, u->z, u->speed, u->flags);
+        }
+        for (size_t i = 0; i < v->clients.len; i++) ws_send(v->clients.data[i], k.data, k.len);
+        mcc_vec_free(&k);
+        v->kin.len = 0;
+        mcc_hmap_free(&v->kin_index);
+        mcc_hmap_init(&v->kin_index, 64);
+    }
+    pthread_mutex_unlock(&v->lock);
 }
 
 /* ------------------------------------------------------------------ */
@@ -327,9 +516,66 @@ static void begin_poses(bytes *b, double ms) {
 
 static void end_poses(bytes *b, uint32_t n) { memcpy(b->data + 9, &n, 4); }
 
+/* 物理枪：推进物理之前，把被抓住的结构往目标位置拉（区域线程上，只管本区域里的结构） */
+void mcc_viewer_pre_tick(void *vp, mcc_region *r, mcc_region_world *w) {
+    (void)r;
+    mcc_viewer *v = (mcc_viewer*)vp;
+    if (!w->phys) return;
+    pthread_mutex_lock(&v->lock);
+    size_t n = v->grabs.len;
+    grab *list = n ? (grab *)mcc_xmalloc(sizeof(grab) * n) : NULL;
+    if (n) memcpy(list, v->grabs.data, sizeof(grab) * n);
+    pthread_mutex_unlock(&v->lock);
+    for (size_t i = 0; i < n; i++) {
+        grab *g = &list[i];
+        if (!phys_body_get(w->phys, g->body) || phys_body_frozen(w->phys, g->body)) continue;
+        double pose[7];
+        phys_body_get_pose(w->phys, g->body, pose);
+        const double *q = pose + 3; /* x y z w */
+        if (!g->has_local) {
+            /* 世界点 → 结构局部：q⁻¹ (p - 原点) */
+            double d[3] = { g->hit[0] - pose[0], g->hit[1] - pose[1], g->hit[2] - pose[2] };
+            double u[3] = { -q[0], -q[1], -q[2] }, s = q[3];
+            double t[3] = { 2 * (u[1] * d[2] - u[2] * d[1]), 2 * (u[2] * d[0] - u[0] * d[2]), 2 * (u[0] * d[1] - u[1] * d[0]) };
+            for (int k = 0; k < 3; k++) g->local[k] = d[k] + s * t[k];
+            g->local[0] += u[1] * t[2] - u[2] * t[1];
+            g->local[1] += u[2] * t[0] - u[0] * t[2];
+            g->local[2] += u[0] * t[1] - u[1] * t[0];
+            g->has_local = true;
+            pthread_mutex_lock(&v->lock);
+            for (size_t j = 0; j < v->grabs.len; j++)
+                if (v->grabs.data[j].client == g->client && v->grabs.data[j].body == g->body) {
+                    memcpy(v->grabs.data[j].local, g->local, sizeof g->local);
+                    v->grabs.data[j].has_local = true;
+                }
+            pthread_mutex_unlock(&v->lock);
+        }
+        /* 局部点 → 世界：p + q l q⁻¹ */
+        const double *l = g->local;
+        double t[3] = { 2 * (q[1] * l[2] - q[2] * l[1]), 2 * (q[2] * l[0] - q[0] * l[2]), 2 * (q[0] * l[1] - q[1] * l[0]) };
+        double wp[3] = { pose[0] + l[0] + q[3] * t[0] + q[1] * t[2] - q[2] * t[1],
+                         pose[1] + l[1] + q[3] * t[1] + q[2] * t[0] - q[0] * t[2],
+                         pose[2] + l[2] + q[3] * t[2] + q[0] * t[1] - q[1] * t[0] };
+        /* 抓取点按比例追目标，速度上限 60 格/秒；转动阻尼掉，拿着的时候姿态基本不变 */
+        double lin[3], sp = 0;
+        for (int k = 0; k < 3; k++) {
+            lin[k] = (g->target[k] - wp[k]) * 14.0;
+            sp += lin[k] * lin[k];
+        }
+        sp = sqrt(sp);
+        if (sp > 60) for (int k = 0; k < 3; k++) lin[k] *= 60 / sp;
+        double ang[3];
+        phys_body_get_angular_velocity(w->phys, g->body, ang);
+        for (int k = 0; k < 3; k++) ang[k] *= 0.6;
+        phys_body_set_velocities(w->phys, g->body, lin, ang);
+    }
+    free(list);
+}
+
 void mcc_viewer_post_tick(void *vp, mcc_region *r, mcc_region_world *w) {
     mcc_viewer *v = (mcc_viewer*)vp;
     double now_ms = mcc_nanotime() / 1e6;
+    flush_kinetics(v);
 
     /* 推进统计：网络线程每秒汇总一次 */
     pthread_mutex_lock(&v->lock);
@@ -508,6 +754,10 @@ static void handle_http(mcc_viewer *v, client *c) {
     put(&c->out, resp, (size_t)n);
     c->ws = true;
     pthread_mutex_unlock(&v->lock);
+    pthread_mutex_lock(&v->lock);
+    ws_send(c, v->palette.data, v->palette.len);
+    ws_send(c, v->names.data, v->names.len);
+    pthread_mutex_unlock(&v->lock);
     mcc_info("测试客户端已连接（#%u），推送 %zu 个地形区块", c->id, v->chunks.len);
     send_terrain(v, c->id);
 }
@@ -532,14 +782,171 @@ static void task_push(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
     free(q);
 }
 
-static void handle_command(mcc_viewer *v, const char *cmd) {
+/* ---- 方块操作：在拥有该位置的区域线程上执行 ---- */
+
+typedef struct {
+    mcc_viewer *v;
+    uint32_t client;
+    int op;                  /* 0 放置，1 破坏，2 调转速，3 查询，4 冻结/解冻 */
+    int32_t x, y, z;
+    mcc_state_t state;       /* 放置 */
+    int delta;               /* 调转速 */
+    int32_t body;            /* 冻结 */
+} block_req;
+
+static void task_block(mcc_region *r, int32_t cx, int32_t cz, void *arg) {
+    (void)cx; (void)cz;
+    using namespace mcc::create;
+    block_req *q = (block_req *)arg;
+    if (!r) { free(q); return; }
+    mcc_region_world *w = (mcc_region_world *)r->data;
+    mcc::Space &sp = mcc::region_space(w);
+    mcc::BlockPos p{ q->x, q->y, q->z };
+    switch (q->op) {
+    case 0: {
+        mcc_state_t cur = sp.get(p);
+        if (mcc_state_is_air(cur) || (mcc_state_fluid(cur) && !(mcc_state_pflags(cur) & MCC_PHYS_SOLID)))
+            sp.set_block(p, q->state);
+        break;
+    }
+    case 1:
+        sp.destroy_block(p, true);
+        break;
+    case 2: {
+        mcc::BlockEntity *be = sp.block_entity(p);
+        if (be && mcc_state_block(be->state) == g_kblocks.creative_motor) {
+            auto *m = (CreativeMotorBlockEntity *)be;
+            m->set_generated_speed(m->generated.value + q->delta);
+        } else if (be && mcc_state_block(be->state) == g_kblocks.rotation_speed_controller) {
+            auto *c = (SpeedControllerBlockEntity *)be;
+            c->set_target_speed(c->target.value + q->delta);
+        }
+        break;
+    }
+    case 3: {
+        /* 消息 11：查询结果 */
+        bytes b = { 0 };
+        put_u8(&b, 11);
+        put_i32(&b, p.x);
+        put_i32(&b, p.y);
+        put_i32(&b, p.z);
+        put_u32(&b, sp.get(p));
+        KineticBlockEntity *k = as_kinetic(sp.block_entity(p));
+        put_u8(&b, k ? 1 : 0);
+        if (k) {
+            KineticNetwork *n = k->has_network ? network_get(sp, k->network) : nullptr;
+            put_f32(&b, k->get_speed());
+            put_u8(&b, k->over_stressed ? 1 : 0);
+            put_f32(&b, n ? n->current_stress : 0);
+            put_f32(&b, n ? n->current_capacity : 0);
+            put_i32(&b, n ? n->size() : 0);
+            put_u8(&b, k->has_source ? 1 : 0);
+            put_i32(&b, k->source.x);
+            put_i32(&b, k->source.y);
+            put_i32(&b, k->source.z);
+            int value = 0;
+            if (mcc_state_block(k->state) == g_kblocks.creative_motor) value = ((CreativeMotorBlockEntity *)k)->generated.value;
+            else if (mcc_state_block(k->state) == g_kblocks.rotation_speed_controller) value = ((SpeedControllerBlockEntity *)k)->target.value;
+            put_i32(&b, value);
+        }
+        pthread_mutex_lock(&q->v->lock);
+        client *c = find_client(q->v, q->client);
+        if (c) ws_send(c, b.data, b.len);
+        pthread_mutex_unlock(&q->v->lock);
+        mcc_vec_free(&b);
+        break;
+    }
+    case 4:
+        if (w->phys && phys_body_get(w->phys, q->body)) phys_body_set_frozen(w->phys, q->body, !phys_body_frozen(w->phys, q->body));
+        break;
+    }
+    free(q);
+}
+
+static void queue_block(mcc_viewer *v, block_req *q) {
+    if (!mcc_regionizer_queue_chunk_task(&v->lv->rz, q->x >> 4, q->z >> 4, task_block, q)) free(q);
+}
+
+/* 放置命令里的方块状态："名字 属性=值 ..." */
+static bool parse_state(const char *s, mcc_state_t *out) {
+    char name[128];
+    int n = 0;
+    if (sscanf(s, "%127s%n", name, &n) != 1) return false;
+    int32_t b = mcc_block_by_name(name);
+    if (b < 0) return false;
+    mcc_state_t st = mcc_blocks.blocks[b].default_state;
+    s += n;
+    char kv[64];
+    while (sscanf(s, "%63s%n", kv, &n) == 1) {
+        s += n;
+        char *eq = strchr(kv, '=');
+        if (!eq) continue;
+        *eq = 0;
+        st = mcc_state_with_str(st, kv, eq + 1);
+    }
+    *out = st;
+    return true;
+}
+
+static void handle_command(mcc_viewer *v, client *cl, const char *cmd) {
     double x, z;
     int n;
     push_req pr;
+    block_req br = {};
+    br.v = v;
+    br.client = cl->id;
+    int off = 0;
+    int32_t id;
+    double p3[3];
     if (sscanf(cmd, "push %d %lf %lf %lf %lf %lf %lf", &pr.id, &pr.p[0], &pr.p[1], &pr.p[2], &pr.dv[0], &pr.dv[1], &pr.dv[2]) == 7) {
         push_req *q = (push_req*)mcc_xmalloc(sizeof *q);
         *q = pr;
         if (!mcc_regionizer_queue_chunk_task(&v->lv->rz, (int32_t)floor(pr.p[0]) >> 4, (int32_t)floor(pr.p[2]) >> 4, task_push, q)) free(q);
+    } else if (sscanf(cmd, "place %d %d %d %n", &br.x, &br.y, &br.z, &off) == 3 && off) {
+        if (!parse_state(cmd + off, &br.state)) return;
+        br.op = 0;
+        queue_block(v, (block_req *)memcpy(mcc_xmalloc(sizeof br), &br, sizeof br));
+    } else if (sscanf(cmd, "break %d %d %d", &br.x, &br.y, &br.z) == 3) {
+        br.op = 1;
+        queue_block(v, (block_req *)memcpy(mcc_xmalloc(sizeof br), &br, sizeof br));
+    } else if (sscanf(cmd, "adjust %d %d %d %d", &br.x, &br.y, &br.z, &br.delta) == 4) {
+        br.op = 2;
+        queue_block(v, (block_req *)memcpy(mcc_xmalloc(sizeof br), &br, sizeof br));
+    } else if (sscanf(cmd, "info %d %d %d", &br.x, &br.y, &br.z) == 3) {
+        br.op = 3;
+        queue_block(v, (block_req *)memcpy(mcc_xmalloc(sizeof br), &br, sizeof br));
+    } else if (sscanf(cmd, "freeze %d %lf %lf %lf", &br.body, &p3[0], &p3[1], &p3[2]) == 4) {
+        br.op = 4;
+        br.x = (int32_t)floor(p3[0]);
+        br.y = (int32_t)floor(p3[1]);
+        br.z = (int32_t)floor(p3[2]);
+        queue_block(v, (block_req *)memcpy(mcc_xmalloc(sizeof br), &br, sizeof br));
+    } else if (sscanf(cmd, "grab %d %lf %lf %lf", &id, &p3[0], &p3[1], &p3[2]) == 4) {
+        /* 物理枪抓住：每个客户端只抓一个 */
+        pthread_mutex_lock(&v->lock);
+        size_t w = 0;
+        for (size_t i = 0; i < v->grabs.len; i++)
+            if (v->grabs.data[i].client != cl->id) v->grabs.data[w++] = v->grabs.data[i];
+        v->grabs.len = w;
+        grab g = {};
+        g.client = cl->id;
+        g.body = id;
+        memcpy(g.hit, p3, sizeof p3);
+        memcpy(g.target, p3, sizeof p3);
+        mcc_vec_push(&v->grabs, g);
+        pthread_mutex_unlock(&v->lock);
+    } else if (sscanf(cmd, "hold %lf %lf %lf", &p3[0], &p3[1], &p3[2]) == 3) {
+        pthread_mutex_lock(&v->lock);
+        for (size_t i = 0; i < v->grabs.len; i++)
+            if (v->grabs.data[i].client == cl->id) memcpy(v->grabs.data[i].target, p3, sizeof p3);
+        pthread_mutex_unlock(&v->lock);
+    } else if (!strncmp(cmd, "release", 7)) {
+        pthread_mutex_lock(&v->lock);
+        size_t w = 0;
+        for (size_t i = 0; i < v->grabs.len; i++)
+            if (v->grabs.data[i].client != cl->id) v->grabs.data[w++] = v->grabs.data[i];
+        v->grabs.len = w;
+        pthread_mutex_unlock(&v->lock);
     } else if (sscanf(cmd, "spawn %lf %lf %d", &x, &z, &n) == 3) {
         if (n < 1) n = 1;
         if (n > 5000) n = 5000;
@@ -574,7 +981,7 @@ static void handle_ws(mcc_viewer *v, client *c) {
         memmove(c->in, c->in + used, c->inlen - used);
         c->inlen -= used;
         if (op == 8) { c->dead = true; return; }
-        if (op == 1) handle_command(v, msg);
+        if (op == 1) handle_command(v, c, msg);
     }
 }
 
@@ -695,6 +1102,10 @@ static void *net_main(void *p) {
             client *c = v->clients.data[i];
             if (c->dead) {
                 if (c->ws) mcc_info("测试客户端断开（#%u）", c->id);
+                size_t gw = 0;
+                for (size_t j = 0; j < v->grabs.len; j++)
+                    if (v->grabs.data[j].client != c->id) v->grabs.data[gw++] = v->grabs.data[j];
+                v->grabs.len = gw;
                 client_free(c);
             } else {
                 v->clients.data[w++] = c;
@@ -720,7 +1131,13 @@ mcc_viewer *mcc_viewer_start(mcc_level *lv, int port, const char *web_dir, mcc_v
     pthread_mutex_init(&v->lock, NULL);
     mcc_hmap_init(&v->region_clear, 16);
     mcc_hmap_init(&v->region_stats, 16);
+    mcc_hmap_init(&v->kin_index, 64);
     build_colors(v);
+    create_colors(v);
+    build_palette(v);
+    g_viewer = v;
+    mcc::g_net_hooks.block_updated = hook_block_updated;
+    mcc::g_net_hooks.block_entity_data = hook_block_entity_data;
 #ifdef _WIN32
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -755,6 +1172,13 @@ void mcc_viewer_stop(mcc_viewer *v) {
         mcc_hmap_free(&v->region_stats);
     }
     free(v->colors);
+    mcc::g_net_hooks = {};
+    g_viewer = NULL;
+    mcc_vec_free(&v->palette);
+    mcc_vec_free(&v->names);
+    mcc_vec_free(&v->kin);
+    mcc_vec_free(&v->grabs);
+    mcc_hmap_free(&v->kin_index);
     pthread_mutex_destroy(&v->lock);
     free(v);
 }

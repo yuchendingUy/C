@@ -2,178 +2,296 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mcc 测试客户端</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #9cc4e8; font-family: system-ui, sans-serif; }
-  canvas { display: block; touch-action: none; }
-  #ui { position: fixed; left: 10px; top: 10px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  #ui button { font-size: 16px; padding: 8px 14px; border: 0; border-radius: 6px; background: #1f2a37; color: #fff; }
-  #ui button:active { background: #3b4b5f; }
-  #ui button.on { background: #c0392b; }
-  #status { position: fixed; left: 10px; bottom: 10px; color: #fff; background: rgba(0,0,0,.45);
-            padding: 6px 10px; border-radius: 6px; font: 13px ui-monospace, monospace; white-space: pre; }
+  canvas { display: block; }
+  #cross { position: fixed; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; pointer-events: none; }
+  #cross::before, #cross::after { content: ''; position: absolute; background: #fff; mix-blend-mode: difference; }
+  #cross::before { left: 8px; top: 0; width: 2px; height: 18px; }
+  #cross::after { left: 0; top: 8px; width: 18px; height: 2px; }
+  #hotbar { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 4px; pointer-events: none; }
+  .slot { width: 74px; height: 50px; background: rgba(0,0,0,.45); border: 2px solid rgba(255,255,255,.25); border-radius: 6px;
+          color: #fff; font-size: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+  .slot.sel { border-color: #ffd34d; background: rgba(0,0,0,.65); }
+  .slot b { font-size: 11px; opacity: .7; }
+  .swatch { width: 22px; height: 10px; border-radius: 2px; margin: 2px 0; }
+  #info { position: fixed; left: 10px; top: 10px; color: #fff; background: rgba(0,0,0,.45); padding: 6px 10px; border-radius: 6px;
+          font: 13px ui-monospace, monospace; white-space: pre; min-width: 220px; }
+  #status { position: fixed; right: 10px; top: 10px; color: #fff; background: rgba(0,0,0,.45); padding: 6px 10px; border-radius: 6px;
+            font: 12px ui-monospace, monospace; white-space: pre; text-align: right; }
+  #menu { position: fixed; inset: 0; background: rgba(10,20,30,.6); display: flex; align-items: center; justify-content: center; }
+  #menu .box { background: #1f2a37; color: #e8eef5; padding: 22px 26px; border-radius: 10px; max-width: 560px; line-height: 1.6; }
+  #menu h2 { margin: 0 0 10px; font-size: 20px; }
+  #menu button { font-size: 15px; padding: 8px 14px; margin: 4px 6px 4px 0; border: 0; border-radius: 6px; background: #3b82f6; color: #fff; cursor: pointer; }
+  #menu button.alt { background: #4b5563; }
+  #menu kbd { background: #374151; padding: 1px 6px; border-radius: 4px; font-size: 13px; }
 </style>
 </head>
 <body>
-<div id="ui">
-  <button data-n="1">召唤 1 个</button>
-  <button data-n="20">召唤 20 个</button>
-  <button data-n="100">召唤 100 个</button>
-  <button id="clear">清空</button>
-  <button id="hit">拍打模式：关</button>
-</div>
+<div id="cross"></div>
+<div id="hotbar"></div>
+<div id="info"></div>
 <div id="status">连接中…</div>
+<div id="menu"><div class="box">
+  <h2>mcc 测试客户端</h2>
+  <div><kbd>WASD</kbd> 移动 <kbd>空格</kbd> 跳 <kbd>Ctrl</kbd> 跑 <kbd>Shift</kbd> 潜行 <kbd>F</kbd> 飞行开关（飞行时空格上升、Shift 下降）</div>
+  <div><kbd>1</kbd>~<kbd>0</kbd> 或滚轮选物品 · 左键破坏 · 右键放置（Shift+右键反向放马达）</div>
+  <div>看着马达或转速控制器按 <kbd>[</kbd> <kbd>]</kbd> 调转速（±8 RPM）</div>
+  <div><b>物理枪</b>（第 1 格）：按住左键抓结构，移动视角拖它，滚轮调远近，松开扔出去；抓着时右键冻结，对冻结的结构右键解冻</div>
+  <div><kbd>R</kbd> 在看着的地方召唤一个物理结构 · <kbd>Esc</kbd> 打开这个菜单</div>
+  <div style="margin-top:12px">
+    <button id="play">开始</button>
+    <button class="alt" data-n="1">召唤 1 个结构</button>
+    <button class="alt" data-n="20">召唤 20 个</button>
+    <button class="alt" data-n="100">召唤 100 个</button>
+    <button class="alt" id="clear">清空结构</button>
+  </div>
+</div></div>
 <script type="module">
 import * as THREE from './three.module.min.js';
 
-/* ---------------- 场景 ---------------- */
+/* ================= 场景 ================= */
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x9cc4e8);
-scene.fog = new THREE.Fog(0x9cc4e8, 120, 260);
-const camera = new THREE.PerspectiveCamera(65, 1, 0.1, 600);
+scene.fog = new THREE.Fog(0x9cc4e8, 90, 220);
+const camera = new THREE.PerspectiveCamera(75, 1, 0.05, 500);
 scene.add(new THREE.HemisphereLight(0xffffff, 0x556070, 1.6));
-const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+const sun = new THREE.DirectionalLight(0xffffff, 1.5);
 sun.position.set(40, 100, 25);
 scene.add(sun);
-
-function resize() {
-  renderer.setSize(innerWidth, innerHeight);
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-}
+function resize() { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); }
 addEventListener('resize', resize);
 resize();
+const tmpC = new THREE.Color(), tmpM = new THREE.Matrix4();
 
-/* ---------------- 视角：拖动旋转，双指/滚轮缩放，右键/三指平移 ---------------- */
-const target = new THREE.Vector3(8, 64, 0);
-let yaw = 0.9, pitch = 0.55, dist = 70;
-const pointers = new Map();
-let pinchDist = 0;
-renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
-renderer.domElement.addEventListener('pointerdown', e => { pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, b: e.button }); renderer.domElement.setPointerCapture(e.pointerId); });
-renderer.domElement.addEventListener('pointerup', e => { pointers.delete(e.pointerId); pinchDist = 0; });
-renderer.domElement.addEventListener('pointercancel', e => { pointers.delete(e.pointerId); pinchDist = 0; });
-/* 拍打模式：鼠标划过 / 手指拖过结构时，按划动方向和速度给它一个冲量 */
-let hitMode = false;
-const hitBtn = document.getElementById('hit');
-hitBtn.onclick = () => { hitMode = !hitMode; hitBtn.textContent = `拍打模式：${hitMode ? '开' : '关'}`; hitBtn.classList.toggle('on', hitMode); };
-const raycaster = new THREE.Raycaster(), ndc = new THREE.Vector2();
-const lastHit = new Map();               // 结构编号 → 上次拍打的时间（同一个结构 120ms 内只拍一次）
-let swipe = null;                        // 上一次指针位置与时间
-function trySwipe(e) {
-  const now = performance.now();
-  if (!swipe || now - swipe.t > 100) { swipe = { x: e.clientX, y: e.clientY, t: now }; return; }
-  const dt = Math.max(1, now - swipe.t) / 1000, dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
-  swipe = { x: e.clientX, y: e.clientY, t: now };
-  if (Math.hypot(dx, dy) < 2) return;
-  ndc.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
-  raycaster.setFromCamera(ndc, camera);
-  const meshes = [];
-  for (const b of bodies.values()) if (b.group.visible) meshes.push(b.inner.children[0]);
-  const hit = raycaster.intersectObjects(meshes, false)[0];
-  if (!hit) return;
-  const id = hit.object.userData.id;
-  if (now - (lastHit.get(id) || 0) < 120) return;
-  lastHit.set(id, now);
-  // 屏幕像素 → 命中点处的世界距离，得到划动的世界速度；再往上抬一点让它飞起来
-  const perPx = 2 * hit.distance * Math.tan(camera.fov * Math.PI / 360) / innerHeight;
-  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
-  const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
-  const v = right.multiplyScalar(dx * perPx / dt).addScaledVector(up, -dy * perPx / dt);
-  v.y += v.length() * 0.3;
-  const p = hit.point;
-  send(`push ${id} ${p.x.toFixed(3)} ${p.y.toFixed(3)} ${p.z.toFixed(3)} ${v.x.toFixed(2)} ${v.y.toFixed(2)} ${v.z.toFixed(2)}`);
+/* ================= 方块数据（服务端调色板） ================= */
+const MINY = -64, H = 384;
+let pal = null;               // 每个状态 13 字节：rgb, 标志, 种类, 轴, 朝向, 外框 6
+let names = [];               // [{first, count, name}]
+const F_AIR = 1, F_FULL = 2, F_LIQ = 4, F_COL = 8;
+const K = { CUBE: 0, SHAFT: 1, COG: 2, LCOG: 3, ENC: 4, GEARBOX: 5, SPLIT: 6, CHAIN: 7, MOTOR: 8, CTRL: 9, ENC_COG: 10, ENC_LCOG: 11 };
+const flagsOf = s => pal[s * 13 + 3], kindOf = s => pal[s * 13 + 4], axisOf = s => pal[s * 13 + 5], facingOf = s => pal[s * 13 + 6];
+const boxOf = s => { const o = s * 13 + 7; return [pal[o] / 16, pal[o + 1] / 16, pal[o + 2] / 16, pal[o + 3] / 16, pal[o + 4] / 16, pal[o + 5] / 16]; };
+const isAir = s => !pal || (flagsOf(s) & F_AIR);
+function blockOf(s) {             // 状态 → 方块（二分）
+  let lo = 0, hi = names.length - 1;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (names[m].first <= s) lo = m; else hi = m - 1; }
+  return names[lo];
 }
-renderer.domElement.addEventListener('pointermove', e => {
-  // 拍打模式下：鼠标悬停划过、或左键/单指拖动 = 拍打
-  if (hitMode && pointers.size <= 1 && (!pointers.has(e.pointerId) ? e.pointerType === 'mouse' : pointers.get(e.pointerId).b === 0)) {
-    trySwipe(e);
-    const p = pointers.get(e.pointerId);
-    if (p) { p.x = e.clientX; p.y = e.clientY; }
-    return;
-  }
-  const p = pointers.get(e.pointerId);
-  if (!p) return;
-  const dx = e.clientX - p.x, dy = e.clientY - p.y;
-  p.x = e.clientX; p.y = e.clientY;
-  if (pointers.size === 2) {
-    const [a, b] = [...pointers.values()];
-    const d = Math.hypot(a.x - b.x, a.y - b.y);
-    if (pinchDist) dist = Math.min(300, Math.max(5, dist * pinchDist / d));
-    pinchDist = d;
-    return;
-  }
-  if (p.b === 2 || e.shiftKey || pointers.size >= 3) {
-    const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
-    const fwd = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
-    target.addScaledVector(right, -dx * dist * 0.002).addScaledVector(fwd, -dy * dist * 0.002);
-  } else {
-    yaw -= dx * 0.005;
-    pitch = Math.min(1.5, Math.max(-0.2, pitch + dy * 0.005));
-  }
-});
-renderer.domElement.addEventListener('wheel', e => { dist = Math.min(300, Math.max(5, dist * Math.exp(e.deltaY * 0.001))); e.preventDefault(); }, { passive: false });
+const stateName = s => names.length ? blockOf(s).name : '?';
+const blockByName = n => names.find(b => b.name === n);
 
-/* ---------------- 几何：单位方块，原点在方块的最小角 ---------------- */
-const boxGeo = new THREE.BoxGeometry(1, 1, 1).translate(0.5, 0.5, 0.5);
-const solidMat = new THREE.MeshLambertMaterial();
-const tmpM = new THREE.Matrix4(), tmpC = new THREE.Color();
-
-function instanced(geo, mat, list) {
-  const m = new THREE.InstancedMesh(geo, mat, list.length);
-  list.forEach((b, i) => {
-    m.setMatrixAt(i, tmpM.makeTranslation(b[0], b[1], b[2]));
-    m.setColorAt(i, tmpC.setRGB(b[3] / 255, b[4] / 255, b[5] / 255, THREE.SRGBColorSpace));
-  });
-  m.instanceMatrix.needsUpdate = true;
-  if (m.instanceColor) m.instanceColor.needsUpdate = true;
-  return m;
+/* ================= 世界：区块方块数组 ================= */
+const chunks = new Map();         // "cx,cz" → { cx, cz, data: Uint16Array, mesh, water, dirty }
+const ckey = (cx, cz) => cx + ',' + cz;
+const idx = (lx, y, lz) => (y - MINY) * 256 + lz * 16 + lx;
+function getState(x, y, z) {
+  if (y < MINY || y >= MINY + H) return 0;
+  const c = chunks.get(ckey(x >> 4, z >> 4));
+  return c ? c.data[idx(x & 15, y, z & 15)] : 0;
 }
+function setState(x, y, z, s) {
+  const c = chunks.get(ckey(x >> 4, z >> 4));
+  if (!c || y < MINY || y >= MINY + H) return;
+  c.data[idx(x & 15, y, z & 15)] = s;
+  c.dirty = true;
+  // 边界上的方块会影响邻居区块的面
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const n = chunks.get(ckey((x + dx) >> 4, (z + dz) >> 4));
+    if (n && n !== c) n.dirty = true;
+  }
+}
+const isFull = s => s && (flagsOf(s) & F_FULL);
+const isLiquidOnly = s => s && (flagsOf(s) & F_LIQ) && !(flagsOf(s) & F_COL);
 
-/* 地形：每个区块合成一个网格，只画露在外面的面（服务端给出每个方块的露面标志） */
+/* 区块网格：普通方块按面合并；动力部件另外画（会转） */
 const terrainMat = new THREE.MeshLambertMaterial({ vertexColors: true });
 const waterMat = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: 0.55, depthWrite: false });
-const FACE = [ // 法线, 4 个角（方块内 0~1 坐标）, 明暗
+const FACE = [ // 法线, 4 个角, 明暗
   [[-1, 0, 0], [[0,0,1],[0,1,1],[0,1,0],[0,0,0]], 0.80], [[1, 0, 0], [[1,0,0],[1,1,0],[1,1,1],[1,0,1]], 0.80],
   [[0, -1, 0], [[0,0,0],[1,0,0],[1,0,1],[0,0,1]], 0.55], [[0, 1, 0], [[0,1,1],[1,1,1],[1,1,0],[0,1,0]], 1.00],
   [[0, 0, -1], [[0,0,0],[0,1,0],[1,1,0],[1,0,0]], 0.70], [[0, 0, 1], [[1,0,1],[1,1,1],[0,1,1],[0,0,1]], 0.70],
 ];
-function chunkMesh(list, water) {
-  const pos = [], nor = [], col = [], idx = [];
-  for (const b of list) {
-    for (let f = 0; f < 6; f++) {
-      if (!(b[6] >> f & 1)) continue;
-      const [n, corners, shade] = FACE[f];
-      const base = pos.length / 3;
-      for (const c of corners) {
-        pos.push(b[0] + c[0], b[1] + (water && c[1] ? 0.88 : c[1]), b[2] + c[2]);
-        nor.push(n[0], n[1], n[2]);
-        tmpC.setRGB(b[3] / 255 * shade, b[4] / 255 * shade, b[5] / 255 * shade, THREE.SRGBColorSpace);
-        col.push(tmpC.r, tmpC.g, tmpC.b);
-      }
-      idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+function buildChunk(c) {
+  c.dirty = false;
+  for (const m of [c.mesh, c.water]) if (m) { scene.remove(m); m.geometry.dispose(); }
+  c.mesh = c.water = null;
+  const P = [[], [], [], []], W = [[], [], [], []]; // pos, nor, col, idx
+  const push = (A, x, y, z, f, r, g, b, box) => {
+    const [n, corners, shade] = FACE[f];
+    const base = A[0].length / 3;
+    for (const k of corners) {
+      A[0].push(x + (k[0] ? box[3] : box[0]), y + (k[1] ? box[4] : box[1]), z + (k[2] ? box[5] : box[2]));
+      A[1].push(n[0], n[1], n[2]);
+      tmpC.setRGB(r / 255 * shade, g / 255 * shade, b / 255 * shade, THREE.SRGBColorSpace);
+      A[2].push(tmpC.r, tmpC.g, tmpC.b);
     }
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-  g.setIndex(idx);
-  return new THREE.Mesh(g, water ? waterMat : terrainMat);
+    A[3].push(base, base + 1, base + 2, base, base + 2, base + 3);
+  };
+  const ox = c.cx * 16, oz = c.cz * 16, d = c.data;
+  for (let y = c.ymin; y <= c.ymax; y++)
+    for (let lz = 0; lz < 16; lz++)
+      for (let lx = 0; lx < 16; lx++) {
+        const s = d[idx(lx, y, lz)];
+        if (!s || isAir(s) || kindOf(s) !== K.CUBE) continue;
+        const o = s * 13, r = pal[o], g = pal[o + 1], b = pal[o + 2];
+        const x = ox + lx, z = oz + lz;
+        if (isLiquidOnly(s)) {
+          if (!(flagsOf(getState(x, y + 1, z)) & F_LIQ)) push(W, x, y, z, 3, r, g, b, [0, 0, 0, 1, 0.88, 1]);
+          continue;
+        }
+        const full = isFull(s);
+        const box = full ? [0, 0, 0, 1, 1, 1] : (boxOf(s)[3] > 0 ? boxOf(s) : [0.3, 0, 0.3, 0.7, 0.8, 0.7]);
+        for (let f = 0; f < 6; f++) {
+          const [n] = FACE[f];
+          if (full && isFull(getState(x + n[0], y + n[1], z + n[2]))) continue;
+          push(P, x, y, z, f, r, g, b, box);
+        }
+      }
+  const mk = (A, mat) => {
+    if (!A[3].length) return null;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(A[0], 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(A[1], 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(A[2], 3));
+    g.setIndex(A[3]);
+    const m = new THREE.Mesh(g, mat);
+    scene.add(m);
+    return m;
+  };
+  c.mesh = mk(P, terrainMat);
+  c.water = mk(W, waterMat);
 }
 
-/* ---------------- 结构：插值缓冲 ---------------- */
-/* 服务端每刻（50ms）只发正在动的结构，每条带服务端时间。
- * 渲染时钟按本地帧时间连续前进，只做小幅修正去追"估计的服务端当前时间 - DELAY"，
- * 网络抖动不会让画面跳；在前后两个采样之间插值：位置线性、旋转球面插值。
- * 不外推：采样用完（结构睡着了）就停在最后一个位置。 */
+/* ================= 动力部件（按服务端转速转） ================= */
+const kinetics = new Map();       // 坐标键 → { group, rotors: [{obj, dir}], speed, state }
+const kspeed = new Map();         // 坐标键 → 转速（RPM，超载为 0）
+const pkey = (x, y, z) => x + ',' + y + ',' + z;
+const matCache = new Map();
+const mat = hex => { if (!matCache.has(hex)) matCache.set(hex, new THREE.MeshLambertMaterial({ color: hex })); return matCache.get(hex); };
+const SHAFT_C = 0xb5b5ae, WOOD = 0x9c6e3c, WOOD_D = 0x7a5530;
+const cyl = (r, h, seg = 12) => new THREE.CylinderGeometry(r, r, h, seg);
+/* 以 Y 轴为转轴的转子 */
+function shaftMesh(len = 1, r = 0.19) { return new THREE.Mesh(cyl(r, len, 10), mat(SHAFT_C)); }
+function cogMesh(radius, teeth) {
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(cyl(radius - 0.06, 0.25, 24), mat(WOOD)));
+  const tooth = new THREE.BoxGeometry(0.14, 0.22, 0.14);
+  for (let i = 0; i < teeth; i++) {
+    const a = i / teeth * Math.PI * 2, t = new THREE.Mesh(tooth, mat(WOOD_D));
+    t.position.set(Math.cos(a) * (radius - 0.02), 0, Math.sin(a) * (radius - 0.02));
+    t.rotation.y = -a;
+    g.add(t);
+  }
+  g.add(shaftMesh(1));
+  return g;
+}
+/* 把"绕 Y 转"的东西摆到 axis 轴上：外层负责朝向，内层绕自己的 Y 转 */
+function onAxis(obj, axis) {
+  const outer = new THREE.Group();
+  if (axis === 0) outer.rotation.z = -Math.PI / 2;
+  else if (axis === 2) outer.rotation.x = Math.PI / 2;
+  outer.add(obj);
+  return outer;
+}
+const DIRV = [[0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]]; // DOWN UP NORTH SOUTH WEST EAST
+const dirAxis = d => d <= 1 ? 1 : d <= 3 ? 2 : 0;
+const dirPositive = d => d === 1 || d === 3 || d === 5;
+/* 半根轴（从方块中心伸向 d 方向） */
+function halfShaft(d, len = 0.52) {
+  const m = shaftMesh(len);
+  m.position.y = dirPositive(d) ? len / 2 : -len / 2;
+  const holder = new THREE.Group(); holder.add(m);
+  return holder;
+}
+function casing(hex, s = 1) { return new THREE.Mesh(new THREE.BoxGeometry(s, s, s), mat(hex)); }
+
+function addKinetic(x, y, z, s) {
+  removeKinetic(x, y, z);
+  const kind = kindOf(s), axis = axisOf(s), o = s * 13;
+  const color = (pal[o] << 16) | (pal[o + 1] << 8) | pal[o + 2];
+  const group = new THREE.Group();
+  group.position.set(x + 0.5, y + 0.5, z + 0.5);
+  const rotors = [];              // { obj：绕本地 Y 转的对象, from：取哪个位置的转速（null 用自己的） }
+  const rot = (obj, ax, from = null, offsetDeg = 0) => { const outer = onAxis(obj, ax); group.add(outer); rotors.push({ obj, from, off: offsetDeg }); };
+  // Create 的齿轮错位：小齿轮每隔一格错开半个齿，大齿轮另有 11.25° 偏移
+  const cogOffset = (large) => {
+    const sum = (axis === 0 ? 0 : x) + (axis === 1 ? 0 : y) + (axis === 2 ? 0 : z);
+    return sum % 2 === 0 ? 22.5 : (large ? 11.25 : 0);
+  };
+  switch (kind) {
+    case K.SHAFT: rot(shaftMesh(1), axis); break;
+    case K.COG: rot(cogMesh(0.45, 14), axis, null, cogOffset(false)); break;
+    case K.LCOG: rot(cogMesh(0.95, 28), axis, null, cogOffset(true)); break;
+    case K.ENC: case K.CHAIN: case K.ENC_COG: case K.ENC_LCOG:
+      group.add(casing(color, 0.98)); rot(shaftMesh(1.06, 0.2), axis); break;
+    case K.GEARBOX: {
+      group.add(casing(color, 0.98));
+      for (let d = 0; d < 6; d++) if (dirAxis(d) !== axis) {
+        const v = DIRV[d]; rot(halfShaft(d, 0.53), dirAxis(d), pkey(x + v[0], y + v[1], z + v[2]));
+      }
+      break;
+    }
+    case K.SPLIT: {
+      group.add(casing(color, 0.98));
+      const band = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.0, 1.0).scale(axis === 0 ? 0.25 : 1.01, axis === 1 ? 0.25 : 1.01, axis === 2 ? 0.25 : 1.01),
+                                  mat(stateName(s).includes('clutch') ? 0xc0392b : 0x2e86c1));
+      group.add(band);
+      for (let d = 0; d < 6; d++) if (dirAxis(d) === axis) {
+        const v = DIRV[d]; rot(halfShaft(d, 0.53), axis, pkey(x + v[0], y + v[1], z + v[2]));
+      }
+      break;
+    }
+    case K.MOTOR: {
+      const f = facingOf(s), v = DIRV[f];
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.62, 0.62), mat(color));
+      body.position.set(-v[0] * 0.12, -v[1] * 0.12, -v[2] * 0.12);
+      group.add(body);
+      rot(halfShaft(f, 0.5), dirAxis(f));
+      break;
+    }
+    case K.CTRL: {
+      const base = new THREE.Mesh(new THREE.BoxGeometry(1, 0.25, 1), mat(color)); base.position.y = -0.375; group.add(base);
+      const top = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.55, 0.88), mat(0x8a7a5a)); top.position.y = 0.05; group.add(top);
+      rot(shaftMesh(1.02, 0.2), axis);
+      break;
+    }
+  }
+  scene.add(group);
+  kinetics.set(pkey(x, y, z), { group, rotors, state: s });
+}
+function removeKinetic(x, y, z) {
+  const k = kinetics.get(pkey(x, y, z));
+  if (!k) return;
+  scene.remove(k.group);
+  kinetics.delete(pkey(x, y, z));
+}
+function updateKinetics(t) {
+  for (const [key, k] of kinetics) {
+    const own = kspeed.get(key) || 0;
+    for (const r of k.rotors) {
+      // 齿轮箱、离合器的每一侧按那一侧连着的部件转速转（侧边转向各不相同）
+      const sp = r.from && kspeed.has(r.from) ? kspeed.get(r.from) : own;
+      r.obj.rotation.y = (t * sp * 6 + r.off) * Math.PI / 180;   // RPM × 6 = 度/秒
+    }
+  }
+}
+function syncBlock(x, y, z, s) {
+  setState(x, y, z, s);
+  if (s && !isAir(s) && kindOf(s) !== K.CUBE) addKinetic(x, y, z, s);
+  else { removeKinetic(x, y, z); kspeed.delete(pkey(x, y, z)); }
+}
+
+/* ================= 物理结构（插值） ================= */
+const boxGeo = new THREE.BoxGeometry(1, 1, 1).translate(0.5, 0.5, 0.5);
+const solidMat = new THREE.MeshLambertMaterial();
 const DELAY = 120;
-let latestT = null, latestRecv = 0;  // 收到过的最新服务端时间与它的到达时刻
-let renderClock = null, lastFrame = 0;
+let latestT = null, latestRecv = 0, renderClock = null, lastFrame = 0;
 function advanceClock(now) {
   if (latestT === null) return null;
   const target = latestT + (now - latestRecv) - DELAY;
@@ -182,141 +300,486 @@ function advanceClock(now) {
   lastFrame = now;
   return renderClock;
 }
-const bodies = new Map();        // id → { group, inner, samples: [{t, p, q, com}] }
-let nBlocks = 0;
-
+const bodies = new Map();
 function addShape(id, blocks) {
   removeBody(id);
   const group = new THREE.Group(), inner = new THREE.Group();
-  const mesh = instanced(boxGeo, solidMat, blocks);
-  mesh.userData.id = id;
-  inner.add(mesh);
-  group.add(inner);
-  group.visible = false;         // 收到第一个位姿再显示
-  scene.add(group);
-  bodies.set(id, { group, inner, samples: [], n: blocks.length });
-  nBlocks += blocks.length;
+  const m = new THREE.InstancedMesh(boxGeo, solidMat, blocks.length);
+  blocks.forEach((b, i) => { m.setMatrixAt(i, tmpM.makeTranslation(b[0], b[1], b[2])); m.setColorAt(i, tmpC.setRGB(b[3] / 255, b[4] / 255, b[5] / 255, THREE.SRGBColorSpace)); });
+  m.userData.id = id;
+  inner.add(m); group.add(inner); group.visible = false; scene.add(group);
+  bodies.set(id, { group, inner, mesh: m, samples: [], n: blocks.length });
 }
-
-function removeBody(id) {
-  const b = bodies.get(id);
-  if (!b) return;
-  scene.remove(b.group);
-  b.inner.children[0].dispose();
-  nBlocks -= b.n;
-  bodies.delete(id);
-}
-
+function removeBody(id) { const b = bodies.get(id); if (!b) return; scene.remove(b.group); b.mesh.dispose(); bodies.delete(id); }
 function addSample(id, s) {
-  const b = bodies.get(id);
-  if (!b) return;
+  const b = bodies.get(id); if (!b) return;
   const S = b.samples;
   if (S.length && s.t <= S[S.length - 1].t) return;
-  S.push(s);
-  if (S.length > 40) S.splice(0, S.length - 40);
+  S.push(s); if (S.length > 40) S.splice(0, S.length - 40);
 }
-
-const pA = new THREE.Vector3(), pB = new THREE.Vector3(), qI = new THREE.Quaternion();
-function interpolate(renderTime) {
+const pA = new THREE.Vector3(), pB = new THREE.Vector3();
+function interpolate(rt) {
   for (const b of bodies.values()) {
-    const S = b.samples;
-    if (!S.length) continue;
-    // 丢掉渲染时间之前、已经用不到的采样（保留一个作为插值起点）
-    while (S.length > 2 && S[1].t <= renderTime) S.shift();
-    let a = S[0], c = S.length > 1 ? S[1] : S[0];
-    let f = 0;
-    if (renderTime <= a.t) c = a;
-    else if (renderTime >= c.t) { a = c; }
-    else f = (renderTime - a.t) / (c.t - a.t);
+    const S = b.samples; if (!S.length) continue;
+    while (S.length > 2 && S[1].t <= rt) S.shift();
+    let a = S[0], c = S.length > 1 ? S[1] : S[0], f = 0;
+    if (rt <= a.t) c = a; else if (rt >= c.t) a = c; else f = (rt - a.t) / (c.t - a.t);
     pA.fromArray(a.p); pB.fromArray(c.p);
     b.group.position.lerpVectors(pA, pB, f);
-    qI.slerpQuaternions(a.q, c.q, f);
-    b.group.quaternion.copy(qI);
-    b.inner.position.set(-(a.com[0] + (c.com[0] - a.com[0]) * f), -(a.com[1] + (c.com[1] - a.com[1]) * f),
-                         -(a.com[2] + (c.com[2] - a.com[2]) * f));
+    b.group.quaternion.slerpQuaternions(a.q, c.q, f);
+    b.inner.position.set(-(a.com[0] + (c.com[0] - a.com[0]) * f), -(a.com[1] + (c.com[1] - a.com[1]) * f), -(a.com[2] + (c.com[2] - a.com[2]) * f));
     b.group.visible = true;
   }
 }
 
-/* ---------------- 网络 ---------------- */
-let bytesIn = 0, posesIn = 0;
+/* ================= 网络 ================= */
+let ws = null, bytesIn = 0, tpsText = 'TPS -', infoReply = null;
+const send = cmd => { if (ws && ws.readyState === 1) ws.send(cmd); };
 function connect() {
-  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws = new WebSocket(`ws://${location.host}/ws`);
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => { status.textContent = '已连接'; };
-  ws.onclose = () => { status.textContent = '连接断开，2 秒后重连'; for (const id of [...bodies.keys()]) removeBody(id); setTimeout(connect, 2000); };
+  ws.onclose = () => {
+    statusEl.textContent = '连接断开，2 秒后重连';
+    for (const id of [...bodies.keys()]) removeBody(id);
+    for (const c of chunks.values()) for (const m of [c.mesh, c.water]) if (m) scene.remove(m);
+    chunks.clear();
+    for (const k of kinetics.values()) scene.remove(k.group);
+    kinetics.clear(); kspeed.clear();
+    setTimeout(connect, 2000);
+  };
   ws.onmessage = e => {
     const dv = new DataView(e.data);
     bytesIn += e.data.byteLength;
     const type = dv.getUint8(0);
-    if (type === 1) {                          // 地形区块
-      const cx = dv.getInt32(1, true), cz = dv.getInt32(5, true), n = dv.getUint32(9, true);
-      const solid = [], water = [];
-      for (let i = 0, o = 13; i < n; i++, o += 8) {
-        const flags = dv.getUint8(o + 7);
-        const b = [cx * 16 + dv.getUint8(o), dv.getInt16(o + 2, true), cz * 16 + dv.getUint8(o + 1),
-                   dv.getUint8(o + 4), dv.getUint8(o + 5), dv.getUint8(o + 6), flags & 63];
-        (flags & 64 ? water : solid).push(b);
+    if (type === 10) {                       // 调色板
+      const n = dv.getUint32(1, true);
+      pal = new Uint8Array(e.data, 5, n * 13).slice();
+    } else if (type === 12) {                // 方块名
+      const n = dv.getUint32(1, true); let o = 5; names = [];
+      const dec = new TextDecoder();
+      for (let i = 0; i < n; i++) {
+        const first = dv.getUint32(o, true), count = dv.getUint32(o + 4, true), len = dv.getUint8(o + 8);
+        names.push({ first, count, name: dec.decode(new Uint8Array(e.data, o + 9, len)) });
+        o += 9 + len;
       }
-      if (solid.length) scene.add(chunkMesh(solid, false));
-      if (water.length) scene.add(chunkMesh(water, true));
-    } else if (type === 2) {                   // 结构形状
+    } else if (type === 9) {                 // 区块全部方块
+      const cx = dv.getInt32(1, true), cz = dv.getInt32(5, true);
+      const c = { cx, cz, data: new Uint16Array(256 * H), mesh: null, water: null, dirty: true, ymin: 9999, ymax: -9999 };
+      let o = 9;
+      for (let lz = 0; lz < 16; lz++)
+        for (let lx = 0; lx < 16; lx++) {
+          const runs = dv.getUint8(o++);
+          for (let r = 0; r < runs; r++, o += 6) {
+            const y0 = dv.getInt16(o, true), len = dv.getUint16(o + 2, true), s = dv.getUint16(o + 4, true);
+            for (let y = y0; y < y0 + len; y++) {
+              c.data[idx(lx, y, lz)] = s;
+              if (kindOf(s) !== K.CUBE) addKinetic(cx * 16 + lx, y, cz * 16 + lz, s);
+            }
+            c.ymin = Math.min(c.ymin, y0 - 1); c.ymax = Math.max(c.ymax, y0 + len);
+          }
+        }
+      chunks.set(ckey(cx, cz), c);
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const n = chunks.get(ckey(cx + dx, cz + dz)); if (n) n.dirty = true; }
+    } else if (type === 6) {                 // 方块变化
+      const x = dv.getInt32(1, true), y = dv.getInt32(5, true), z = dv.getInt32(9, true), s = dv.getUint32(13, true);
+      const c = chunks.get(ckey(x >> 4, z >> 4));
+      if (c) { c.ymin = Math.min(c.ymin, y - 1); c.ymax = Math.max(c.ymax, y + 1); }
+      syncBlock(x, y, z, s);
+    } else if (type === 8) {                 // 动力部件转速
+      const n = dv.getUint32(1, true);
+      for (let i = 0, o = 5; i < n; i++, o += 17)
+        kspeed.set(pkey(dv.getInt32(o, true), dv.getInt32(o + 4, true), dv.getInt32(o + 8, true)), dv.getFloat32(o + 12, true));
+    } else if (type === 11) {                // 方块查询结果
+      const r = { x: dv.getInt32(1, true), y: dv.getInt32(5, true), z: dv.getInt32(9, true), state: dv.getUint32(13, true), kinetic: dv.getUint8(17) };
+      if (r.kinetic) Object.assign(r, { speed: dv.getFloat32(18, true), over: dv.getUint8(22), stress: dv.getFloat32(23, true),
+        cap: dv.getFloat32(27, true), size: dv.getInt32(31, true), hasSrc: dv.getUint8(35),
+        src: [dv.getInt32(36, true), dv.getInt32(40, true), dv.getInt32(44, true)], value: dv.getInt32(48, true) });
+      infoReply = r;
+    } else if (type === 2) {                 // 结构形状
       const id = dv.getInt32(1, true), n = dv.getUint32(5, true), blocks = [];
       for (let i = 0, o = 9; i < n; i++, o += 9)
-        blocks.push([dv.getInt16(o, true), dv.getInt16(o + 2, true), dv.getInt16(o + 4, true),
-                     dv.getUint8(o + 6), dv.getUint8(o + 7), dv.getUint8(o + 8)]);
+        blocks.push([dv.getInt16(o, true), dv.getInt16(o + 2, true), dv.getInt16(o + 4, true), dv.getUint8(o + 6), dv.getUint8(o + 7), dv.getUint8(o + 8)]);
       addShape(id, blocks);
-    } else if (type === 3) {                   // 位姿批次
+    } else if (type === 3) {                 // 位姿
       const t = dv.getFloat64(1, true), n = dv.getUint32(9, true);
       if (latestT === null || t > latestT) { latestT = t; latestRecv = performance.now(); }
-      for (let i = 0, o = 13; i < n; i++, o += 56) {      // 每条 56 字节
-        addSample(dv.getInt32(o, true), {
-          t,
+      for (let i = 0, o = 13; i < n; i++, o += 56)
+        addSample(dv.getInt32(o, true), { t,
           p: [dv.getFloat64(o + 4, true), dv.getFloat64(o + 12, true), dv.getFloat64(o + 20, true)],
           q: new THREE.Quaternion(dv.getFloat32(o + 28, true), dv.getFloat32(o + 32, true), dv.getFloat32(o + 36, true), dv.getFloat32(o + 40, true)),
-          com: [dv.getFloat32(o + 44, true), dv.getFloat32(o + 48, true), dv.getFloat32(o + 52, true)],
-        });
-      }
-      posesIn += n;
-    } else if (type === 4) {                   // 移除结构
+          com: [dv.getFloat32(o + 44, true), dv.getFloat32(o + 48, true), dv.getFloat32(o + 52, true)] });
+    } else if (type === 4) {
       removeBody(dv.getInt32(1, true));
-    } else if (type === 5) {                   // 推进统计
-      const minTps = dv.getFloat32(1, true), avgTps = dv.getFloat32(5, true), ms = dv.getFloat32(9, true), maxMs = dv.getFloat32(13, true);
+    } else if (type === 5) {                 // 推进统计
+      const avg = dv.getFloat32(5, true), ms = dv.getFloat32(9, true), maxMs = dv.getFloat32(13, true);
       const n = dv.getUint32(17, true), awake = dv.getUint32(21, true), total = dv.getUint32(25, true);
-      tpsText = n ? `TPS ${avgTps.toFixed(1)}（最低 ${minTps.toFixed(1)}）  每刻平均 ${ms.toFixed(2)}ms  这一秒最慢一刻 ${maxMs.toFixed(2)}ms  区域 ${n}\n` +
-                    `服务端结构 ${total} 个，醒着（在动）${awake} 个`
-                  : 'TPS -（没有区域）';
+      tpsText = `TPS ${avg.toFixed(1)}  每刻 ${ms.toFixed(2)}ms（最慢 ${maxMs.toFixed(2)}）\n区域 ${n}  结构 ${total}（在动 ${awake}）`;
     }
   };
-  window.send = cmd => { if (ws.readyState === 1) ws.send(cmd); };
 }
-const status = document.getElementById('status');
-let tpsText = 'TPS -';
-window.__mcc = { bodies, interpolate, clock: () => ({ latestT, latestRecv, renderClock, now: performance.now() }) };
+const statusEl = document.getElementById('status'), infoEl = document.getElementById('info');
 connect();
-document.querySelectorAll('#ui button[data-n]').forEach(b =>
-  b.onclick = () => send(`spawn ${target.x.toFixed(1)} ${target.z.toFixed(1)} ${b.dataset.n}`));
-document.getElementById('clear').onclick = () => send('clear');
 
-/* ---------------- 主循环 ---------------- */
-let frames = 0, lastStat = performance.now();
+/* ================= 玩家：走、跑、跳、飞 ================= */
+const player = { p: new THREE.Vector3(2.5, 66, -12.5), v: new THREE.Vector3(), yaw: Math.PI, pitch: -0.15, onGround: false, fly: false };
+const W = 0.3, HT = 1.8, EYE = 1.62;
+const keys = new Set();
+function solidBoxesNear(minX, minY, minZ, maxX, maxY, maxZ, out) {
+  out.length = 0;
+  for (let x = Math.floor(minX); x <= Math.floor(maxX); x++)
+    for (let y = Math.floor(minY) - 1; y <= Math.floor(maxY); y++)
+      for (let z = Math.floor(minZ); z <= Math.floor(maxZ); z++) {
+        const s = getState(x, y, z);
+        if (!s || !(flagsOf(s) & F_COL)) continue;
+        const b = isFull(s) ? [0, 0, 0, 1, 1, 1] : boxOf(s);
+        out.push([x + b[0], y + b[1], z + b[2], x + b[3], y + b[4], z + b[5]]);
+      }
+  return out;
+}
+const boxes = [];
+/* 按轴移动并推出碰撞（原版 Entity.collide 的做法：先 y 再 x、z） */
+function moveAxis(ax, d) {
+  if (!d) return 0;
+  const p = player.p;
+  const lo = [p.x - W, p.y, p.z - W], hi = [p.x + W, p.y + HT, p.z + W];
+  lo[ax] += Math.min(d, 0); hi[ax] += Math.max(d, 0);
+  solidBoxesNear(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], boxes);
+  const plo = [p.x - W, p.y, p.z - W], phi = [p.x + W, p.y + HT, p.z + W];
+  for (const b of boxes) {
+    let overlap = true;
+    for (let k = 0; k < 3; k++) if (k !== ax && (phi[k] <= b[k] + 1e-7 || plo[k] >= b[k + 3] - 1e-7)) overlap = false;
+    if (!overlap) continue;
+    if (d > 0 && phi[ax] <= b[ax] + 1e-7) d = Math.min(d, b[ax] - phi[ax]);
+    else if (d < 0 && plo[ax] >= b[ax + 3] - 1e-7) d = Math.max(d, b[ax + 3] - plo[ax]);
+  }
+  if (ax === 0) p.x += d; else if (ax === 1) p.y += d; else p.z += d;
+  return d;
+}
+function stepPlayer(dt) {
+  const fwd = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw)), right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+  const want = new THREE.Vector3();
+  if (keys.has('KeyW')) want.add(fwd); if (keys.has('KeyS')) want.sub(fwd);
+  if (keys.has('KeyD')) want.add(right); if (keys.has('KeyA')) want.sub(right);
+  if (want.lengthSq()) want.normalize();
+  const sneak = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  let speed = player.fly ? 11 : keys.has('ControlLeft') ? 5.6 : sneak ? 1.3 : 4.3;
+  const v = player.v;
+  const accel = player.onGround || player.fly ? 12 : 3;
+  v.x += (want.x * speed - v.x) * Math.min(1, accel * dt);
+  v.z += (want.z * speed - v.z) * Math.min(1, accel * dt);
+  if (player.fly) {
+    const up = (keys.has('Space') ? 1 : 0) - (sneak ? 1 : 0);
+    v.y += (up * 8 - v.y) * Math.min(1, 10 * dt);
+  } else {
+    v.y -= 32 * dt;
+    if (v.y < -78) v.y = -78;
+    if (keys.has('Space') && player.onGround) v.y = 9;
+  }
+  // 小步走，避免一步穿过方块
+  const n = Math.max(1, Math.ceil(Math.max(Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)) * dt / 0.3));
+  player.onGround = false;
+  for (let i = 0; i < n; i++) {
+    const h = dt / n;
+    const dy = moveAxis(1, v.y * h);
+    if (Math.abs(dy - v.y * h) > 1e-9) { if (v.y < 0) player.onGround = true; v.y = 0; }
+    const dx = moveAxis(0, v.x * h); if (Math.abs(dx - v.x * h) > 1e-9) v.x = 0;
+    const dz = moveAxis(2, v.z * h); if (Math.abs(dz - v.z * h) > 1e-9) v.z = 0;
+  }
+  if (player.p.y < -80) { player.p.set(2.5, 70, -12.5); v.set(0, 0, 0); }
+}
+
+/* ================= 视角、选中方块 ================= */
+const look = new THREE.Vector3();
+function eye() { return new THREE.Vector3(player.p.x, player.p.y + EYE, player.p.z); }
+function lookDir() {
+  return look.set(-Math.sin(player.yaw) * Math.cos(player.pitch), Math.sin(player.pitch), -Math.cos(player.yaw) * Math.cos(player.pitch)).normalize();
+}
+/* 体素射线（DDA）：返回命中的方块和面 */
+function raycastBlock(o, d, maxDist = 8) {
+  let x = Math.floor(o.x), y = Math.floor(o.y), z = Math.floor(o.z);
+  const sx = Math.sign(d.x), sy = Math.sign(d.y), sz = Math.sign(d.z);
+  const tdx = Math.abs(1 / d.x), tdy = Math.abs(1 / d.y), tdz = Math.abs(1 / d.z);
+  let tx = d.x > 0 ? (x + 1 - o.x) * tdx : (o.x - x) * tdx;
+  let ty = d.y > 0 ? (y + 1 - o.y) * tdy : (o.y - y) * tdy;
+  let tz = d.z > 0 ? (z + 1 - o.z) * tdz : (o.z - z) * tdz;
+  let face = -1, t = 0;
+  for (let i = 0; i < 64 && t <= maxDist; i++) {
+    const s = getState(x, y, z);
+    if (s && !isAir(s) && !isLiquidOnly(s)) {
+      // 不是整块的：再和它的外框求交
+      if (isFull(s) || kindOf(s) !== K.CUBE) return { x, y, z, s, face, t };
+      const b = boxOf(s);
+      if (b[3] > 0) {
+        let t0 = 0, t1 = 1e9;
+        for (let k = 0; k < 3; k++) {
+          const ok = [o.x, o.y, o.z][k], dk = [d.x, d.y, d.z][k], base = [x, y, z][k];
+          const a = (base + b[k] - ok) / dk, c = (base + b[k + 3] - ok) / dk;
+          t0 = Math.max(t0, Math.min(a, c)); t1 = Math.min(t1, Math.max(a, c));
+        }
+        if (t0 <= t1) return { x, y, z, s, face, t };
+      }
+    }
+    if (tx < ty && tx < tz) { x += sx; t = tx; tx += tdx; face = sx > 0 ? 4 : 5; }
+    else if (ty < tz) { y += sy; t = ty; ty += tdy; face = sy > 0 ? 0 : 1; }
+    else { z += sz; t = tz; tz += tdz; face = sz > 0 ? 2 : 3; }
+  }
+  return null;
+}
+/* face：命中的是方块的哪个面（方向编号同服务端 DOWN UP NORTH SOUTH WEST EAST） */
+const highlight = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1.004, 1.004, 1.004)), new THREE.LineBasicMaterial({ color: 0x111111 }));
+scene.add(highlight);
+
+/* ================= 物品栏 ================= */
+const AX = ['x', 'y', 'z'];
+const SLOTS = [
+  { label: '物理枪', gun: true, color: '#22d3ee' },
+  { label: '传动杆', block: 'create:shaft', place: 'axis', color: '#b5b5ae' },
+  { label: '齿轮', block: 'create:cogwheel', place: 'cog', color: '#9c6e3c' },
+  { label: '大齿轮', block: 'create:large_cogwheel', place: 'cog', color: '#7a5530' },
+  { label: '创造马达', block: 'create:creative_motor', place: 'facing', color: '#a550c8' },
+  { label: '齿轮箱', block: 'create:gearbox', place: 'gearbox', color: '#a09b8c' },
+  { label: '离合器', block: 'create:clutch', place: 'axis', color: '#c0392b' },
+  { label: '换向器', block: 'create:gearshift', place: 'axis', color: '#2e86c1' },
+  { label: '机壳传动杆', block: 'create:andesite_encased_shaft', place: 'axis', color: '#a09b8c' },
+  { label: '石头', block: 'minecraft:stone', place: 'plain', color: '#808080' },
+];
+const EXTRA = [ // 第二页（Tab 切换）
+  { label: '转速控制器', block: 'create:rotation_speed_controller', place: 'haxis', color: '#cda04b' },
+  { label: '链式传动', block: 'create:encased_chain_drive', place: 'axis', color: '#a09b8c' },
+  { label: '可调链式', block: 'create:adjustable_chain_gearshift', place: 'axis', color: '#c8a55a' },
+  { label: '黄铜机壳杆', block: 'create:brass_encased_shaft', place: 'axis', color: '#cda04b' },
+  { label: '机壳齿轮', block: 'create:andesite_encased_cogwheel', place: 'axis', color: '#a09b8c' },
+  { label: '木板', block: 'minecraft:oak_planks', place: 'plain', color: '#af8c55' },
+  { label: '玻璃', block: 'minecraft:glass', place: 'plain', color: '#bedce6' },
+  { label: '泥土', block: 'minecraft:dirt', place: 'plain', color: '#7d5a3c' },
+  { label: '圆石', block: 'minecraft:cobblestone', place: 'plain', color: '#737373' },
+  { label: '铁块', block: 'minecraft:iron_block', place: 'plain', color: '#d2d2d2' },
+];
+let page = 0, sel = 0;
+const hotbarEl = document.getElementById('hotbar');
+function slots() { return page ? EXTRA : SLOTS; }
+function drawHotbar() {
+  hotbarEl.innerHTML = slots().map((s, i) => `<div class="slot${i === sel ? ' sel' : ''}"><b>${(i + 1) % 10}</b><div class="swatch" style="background:${s.color}"></div>${s.label}</div>`).join('');
+}
+drawHotbar();
+
+/* 放置朝向：近似机械动力的 getStateForPlacement（不做玩家潜行以外的细节） */
+const nearestLookAxis = d => { const a = [Math.abs(d.x), Math.abs(d.y), Math.abs(d.z)]; return a[0] > a[1] && a[0] > a[2] ? 0 : a[1] > a[2] ? 1 : 2; };
+function nearestLookDir(d) {
+  const a = nearestLookAxis(d), v = [d.x, d.y, d.z][a] > 0;
+  return a === 0 ? (v ? 5 : 4) : a === 1 ? (v ? 1 : 0) : (v ? 3 : 2);
+}
+const opposite = f => f ^ 1;
+const FACING_NAME = ['down', 'up', 'north', 'south', 'west', 'east'];
+/* 相邻的动力部件是否有轴伸向 p（客户端按渲染种类近似 IRotate.hasShaftTowards） */
+function shaftTowards(s, d) {
+  const k = kindOf(s), ax = axisOf(s);
+  if (k === K.SHAFT || k === K.ENC || k === K.SPLIT || k === K.CHAIN || k === K.COG || k === K.LCOG || k === K.CTRL) return dirAxis(d) === ax;
+  if (k === K.GEARBOX) return dirAxis(d) !== ax;
+  if (k === K.MOTOR) return facingOf(s) === d;
+  return false;
+}
+function preferredAxis(x, y, z) {
+  let pref = null;
+  for (let d = 0; d < 6; d++) {
+    const v = DIRV[d], s = getState(x + v[0], y + v[1], z + v[2]);
+    if (!s || isAir(s) || kindOf(s) === K.CUBE) continue;
+    if (!shaftTowards(s, opposite(d))) continue;
+    if (pref !== null && pref !== dirAxis(d)) return null;
+    pref = dirAxis(d);
+  }
+  return pref;
+}
+function placeCommand(slot, hit, sneak) {
+  const v = DIRV[hit.face], x = hit.x + v[0], y = hit.y + v[1], z = hit.z + v[2];
+  const d = lookDir();
+  let props = '';
+  switch (slot.place) {
+    case 'axis': {
+      const pa = preferredAxis(x, y, z);
+      props = `axis=${AX[pa !== null && !sneak ? pa : nearestLookAxis(d)]}`; break;
+    }
+    case 'cog': {
+      const on = getState(hit.x, hit.y, hit.z);
+      let ax = dirAxis(hit.face);
+      if (!sneak && on && kindOf(on) === K.COG) ax = axisOf(on);
+      props = `axis=${AX[ax]}`; break;
+    }
+    case 'gearbox': props = 'axis=y'; break;
+    case 'facing': {
+      const f = nearestLookDir(d);
+      props = `facing=${FACING_NAME[sneak ? f : opposite(f)]}`; break;
+    }
+    case 'haxis': props = `axis=${Math.abs(d.x) > Math.abs(d.z) ? 'z' : 'x'}`; break;
+  }
+  // 不能放进自己身体里
+  const p = player.p, s = blockByName(slot.block);
+  if (x + 1 > p.x - W && x < p.x + W && y + 1 > p.y && y < p.y + HT && z + 1 > p.z - W && z < p.z + W && s) {
+    const st = s.first; // 方块默认状态的碰撞近似
+    if (flagsOf(st) & F_COL) return;
+  }
+  send(`place ${x} ${y} ${z} ${slot.block} ${props}`);
+}
+
+/* ================= 物理枪 ================= */
+const ray = new THREE.Raycaster();
+let held = null;                     // { id, dist, point }
+let lastHold = 0;
+const beamGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+const beam = new THREE.Line(beamGeo, new THREE.LineBasicMaterial({ color: 0x22d3ee }));
+beam.frustumCulled = false; beam.visible = false;
+scene.add(beam);
+function pickBody(maxDist = 40) {
+  ray.set(eye(), lookDir()); ray.far = maxDist;
+  const meshes = [];
+  for (const b of bodies.values()) if (b.group.visible) meshes.push(b.mesh);
+  return ray.intersectObjects(meshes, false)[0] || null;
+}
+function grabTarget() { return eye().addScaledVector(lookDir(), held.dist); }
+
+/* ================= 输入 ================= */
+const menu = document.getElementById('menu');
+const canvas = renderer.domElement;
+document.getElementById('play').onclick = () => canvas.requestPointerLock();
+canvas.addEventListener('click', () => { if (document.pointerLockElement !== canvas) canvas.requestPointerLock(); });
+document.addEventListener('pointerlockchange', () => {
+  const locked = document.pointerLockElement === canvas;
+  menu.style.display = locked ? 'none' : 'flex';
+  if (!locked) { keys.clear(); if (held) { send('release'); held = null; } }
+});
+document.querySelectorAll('#menu button[data-n]').forEach(b => b.onclick = () => spawnAtLook(+b.dataset.n));
+document.getElementById('clear').onclick = () => send('clear');
+function spawnAtLook(n) {
+  const hit = raycastBlock(eye(), lookDir(), 60);
+  const at = hit ? new THREE.Vector3(hit.x, hit.y, hit.z) : eye().addScaledVector(lookDir(), 12);
+  send(`spawn ${at.x.toFixed(1)} ${at.z.toFixed(1)} ${n}`);
+}
+addEventListener('mousemove', e => {
+  if (document.pointerLockElement !== canvas) return;
+  player.yaw -= e.movementX * 0.0025;
+  player.pitch = Math.max(-1.55, Math.min(1.55, player.pitch - e.movementY * 0.0025));
+});
+let lastSpace = 0;
+addEventListener('keydown', e => {
+  if (document.pointerLockElement !== canvas) return;
+  keys.add(e.code);
+  if (e.code === 'Space') {
+    const now = performance.now();
+    if (now - lastSpace < 280) player.fly = !player.fly; /* 双击空格切换飞行 */
+    lastSpace = now;
+  }
+  if (e.code === 'KeyF') player.fly = !player.fly;
+  if (e.code === 'Tab') { page ^= 1; drawHotbar(); e.preventDefault(); }
+  if (e.code.startsWith('Digit')) { const n = (+e.code.slice(5) + 9) % 10; sel = n; drawHotbar(); }
+  if (e.code === 'KeyR') spawnAtLook(1);
+  if (e.code === 'BracketLeft' || e.code === 'BracketRight') {
+    const hit = raycastBlock(eye(), lookDir());
+    if (hit) send(`adjust ${hit.x} ${hit.y} ${hit.z} ${e.code === 'BracketLeft' ? -8 : 8}`);
+  }
+  if (['Space', 'ControlLeft'].includes(e.code)) e.preventDefault();
+});
+addEventListener('keyup', e => keys.delete(e.code));
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('mousedown', e => {
+  if (document.pointerLockElement !== canvas) return;
+  const slot = slots()[sel];
+  const sneak = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  if (slot.gun) {
+    if (e.button === 0) {
+      const h = pickBody();
+      if (h) {
+        held = { id: h.object.userData.id, dist: h.distance };
+        send(`grab ${held.id} ${h.point.x.toFixed(3)} ${h.point.y.toFixed(3)} ${h.point.z.toFixed(3)}`);
+      }
+    } else if (e.button === 2) {
+      if (held) {
+        const p = grabTarget();
+        send(`freeze ${held.id} ${p.x.toFixed(2)} ${p.y.toFixed(2)} ${p.z.toFixed(2)}`);
+        send('release'); held = null;
+      } else {
+        const h = pickBody();
+        if (h) send(`freeze ${h.object.userData.id} ${h.point.x.toFixed(2)} ${h.point.y.toFixed(2)} ${h.point.z.toFixed(2)}`);
+      }
+    }
+    return;
+  }
+  const hit = raycastBlock(eye(), lookDir());
+  if (!hit) return;
+  if (e.button === 0) send(`break ${hit.x} ${hit.y} ${hit.z}`);
+  else if (e.button === 2 && hit.face >= 0) placeCommand(slot, hit, sneak);
+});
+canvas.addEventListener('mouseup', e => { if (e.button === 0 && held) { send('release'); held = null; } });
+addEventListener('wheel', e => {
+  if (document.pointerLockElement !== canvas) return;
+  if (held) { held.dist = Math.max(2, Math.min(40, held.dist * Math.exp(-e.deltaY * 0.0015))); return; }
+  sel = (sel + (e.deltaY > 0 ? 1 : 9)) % 10; drawHotbar();
+}, { passive: true });
+
+/* ================= 信息面板 ================= */
+let infoAt = 0, infoKey = '';
+function updateInfo(now) {
+  const hit = raycastBlock(eye(), lookDir());
+  if (hit) {
+    highlight.visible = true;
+    const k = kindOf(hit.s), b = isFull(hit.s) || k !== K.CUBE ? [0, 0, 0, 1, 1, 1] : boxOf(hit.s);
+    highlight.scale.set(b[3] - b[0] + 0.004, b[4] - b[1] + 0.004, b[5] - b[2] + 0.004);
+    highlight.position.set(hit.x + (b[0] + b[3]) / 2, hit.y + (b[1] + b[4]) / 2, hit.z + (b[2] + b[5]) / 2);
+    const key = pkey(hit.x, hit.y, hit.z);
+    if (key !== infoKey || now - infoAt > 400) { send(`info ${hit.x} ${hit.y} ${hit.z}`); infoAt = now; infoKey = key; }
+  } else { highlight.visible = false; infoKey = ''; }
+  const slot = slots()[sel];
+  let text = `${slot.label}${player.fly ? '   [飞行]' : ''}\n`;
+  const r = infoReply;
+  if (hit && r && r.x === hit.x && r.y === hit.y && r.z === hit.z) {
+    text += `${stateName(r.state)}  (${r.x}, ${r.y}, ${r.z})\n`;
+    if (r.kinetic) {
+      text += `转速 ${r.speed.toFixed(1)} RPM${r.over ? '  【超载】' : ''}\n`;
+      text += r.size ? `网络 ${r.size} 个部件  应力 ${r.stress.toFixed(0)} / ${r.cap.toFixed(0)} SU\n` : '不在动力网络里\n';
+      text += r.hasSrc ? `动力来自 (${r.src.join(', ')})\n` : '';
+      if (stateName(r.state).includes('motor') || stateName(r.state).includes('speed_controller')) text += `设定 ${r.value} RPM（[ ] 调整）\n`;
+    }
+  } else if (hit) text += `${stateName(hit.s)}  (${hit.x}, ${hit.y}, ${hit.z})\n`;
+  if (held) text += `抓着结构 #${held.id}  距离 ${held.dist.toFixed(1)}\n`;
+  infoEl.textContent = text.trimEnd();
+}
+
+/* ================= 主循环 ================= */
+let prev = performance.now(), frames = 0, lastStat = prev;
 function frame(now) {
   requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - prev) / 1000);
+  prev = now;
+  if (pal) {
+    let built = 0;
+    for (const c of chunks.values()) if (c.dirty && built < 6) { buildChunk(c); built++; }
+  }
+  if (document.pointerLockElement === canvas) stepPlayer(dt);
+  camera.position.copy(eye());
+  camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
   const rt = advanceClock(now);
   if (rt !== null) interpolate(rt);
-  camera.position.set(target.x + dist * Math.cos(pitch) * Math.sin(yaw), target.y + dist * Math.sin(pitch),
-                      target.z + dist * Math.cos(pitch) * Math.cos(yaw));
-  camera.lookAt(target);
+  updateKinetics(now / 1000);
+  if (pal) updateInfo(now);
+  if (held) {
+    const tgt = grabTarget();
+    if (now - lastHold > 33) { send(`hold ${tgt.x.toFixed(3)} ${tgt.y.toFixed(3)} ${tgt.z.toFixed(3)}`); lastHold = now; }
+    const b = bodies.get(held.id);
+    const from = eye().addScaledVector(lookDir(), 0.6).add(new THREE.Vector3(0, -0.25, 0));
+    beamGeo.attributes.position.setXYZ(0, from.x, from.y, from.z);
+    beamGeo.attributes.position.setXYZ(1, tgt.x, tgt.y, tgt.z);
+    beamGeo.attributes.position.needsUpdate = true;
+    beam.visible = !!b;
+  } else beam.visible = false;
   renderer.render(scene, camera);
   frames++;
   if (now - lastStat > 1000) {
     const s = (now - lastStat) / 1000;
-    status.textContent = `${tpsText}\n结构 ${bodies.size} 个（${nBlocks} 方块）  ${(frames / s).toFixed(0)} 帧/秒\n` +
-                         `位姿 ${(posesIn / s).toFixed(0)} 条/秒  下行 ${(bytesIn / s / 1024).toFixed(1)} KB/秒`;
-    frames = 0; bytesIn = 0; posesIn = 0; lastStat = now;
+    statusEl.textContent = `${tpsText}\n${(frames / s).toFixed(0)} 帧/秒  下行 ${(bytesIn / s / 1024).toFixed(1)} KB/秒`;
+    frames = 0; bytesIn = 0; lastStat = now;
   }
 }
 requestAnimationFrame(frame);
+window.__mcc = { player, chunks, kinetics, kspeed, bodies, send, getState };
 </script>
 </body>
 </html>

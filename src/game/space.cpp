@@ -6,6 +6,7 @@
 
 namespace mcc {
 
+NetHooks g_net_hooks;
 static std::atomic<uint64_t> g_be_seq{ 1 };
 static const SpaceAttachmentType *g_attach_types[MAX_SPACE_ATTACHMENTS];
 static int g_attach_count;

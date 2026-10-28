@@ -478,6 +478,24 @@ void phys_body_get_linear_velocity(phys_scene *s, int32_t id, double out[3]) {
     out[0] = v.x; out[1] = v.y; out[2] = v.z;
 }
 
+void phys_body_set_velocities(phys_scene *s, int32_t id, const double lin[3], const double ang[3]) {
+    b3BodyId b = body_req(s, id, "设速度")->body;
+    if (b3Body_GetType(b) != b3_dynamicBody) return;
+    b3Body_SetLinearVelocity(b, (b3Vec3){ (float)lin[0], (float)lin[1], (float)lin[2] });
+    b3Body_SetAngularVelocity(b, (b3Vec3){ (float)ang[0], (float)ang[1], (float)ang[2] });
+    b3Body_SetAwake(b, true);
+}
+
+void phys_body_set_frozen(phys_scene *s, int32_t id, bool frozen) {
+    b3BodyId b = body_req(s, id, "冻结")->body;
+    b3Body_SetType(b, frozen ? b3_staticBody : b3_dynamicBody);
+    if (!frozen) b3Body_SetAwake(b, true);
+}
+
+bool phys_body_frozen(phys_scene *s, int32_t id) {
+    return b3Body_GetType(body_req(s, id, "查冻结")->body) == b3_staticBody;
+}
+
 void phys_body_get_angular_velocity(phys_scene *s, int32_t id, double out[3]) {
     b3Vec3 v = b3Body_GetAngularVelocity(body_req(s, id, "读角速度")->body);
     out[0] = v.x; out[1] = v.y; out[2] = v.z;

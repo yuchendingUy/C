@@ -32,5 +32,7 @@ void mcc_viewer_stop(mcc_viewer *v);
 void mcc_viewer_add_chunk(mcc_viewer *v, int32_t cx, int32_t cz);
 /* 世界层的推进后回调：推送本区域结构的形状与位姿，处理清空请求 */
 void mcc_viewer_post_tick(void *viewer, mcc_region *r, mcc_region_world *w);
+/* 推进物理之前调用：物理枪拖动结构 */
+void mcc_viewer_pre_tick(void *viewer, mcc_region *r, mcc_region_world *w);
 
 #endif

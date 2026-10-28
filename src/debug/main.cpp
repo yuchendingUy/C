@@ -11,6 +11,9 @@
 #include "../core/jobs.h"
 #include "../core/log.h"
 #include "../phys/colliders.h"
+#include "../game/game.h"
+#include "../create/create.h"
+#include "../create/kinetics/blocks.h"
 #include <math.h>
 #include <signal.h>
 #include <stdio.h>
@@ -141,6 +144,52 @@ static void on_spawn(void *ctx, double x, double z, int count) {
     }
 }
 
+/* 每刻：游戏逻辑（计划刻、方块实体），然后物理枪拉结构 */
+static void demo_tick(void *ctx, mcc_region *r, mcc_region_world *w) {
+    mcc::game_tick_region(w);
+    mcc_viewer_pre_tick(ctx, r, w);
+}
+
+static mcc_state_t kstate(const char *name, const char *prop = nullptr, const char *val = nullptr) {
+    mcc_state_t s = mcc_block_default_state(name);
+    return prop ? mcc_state_with_str(s, prop, val) : s;
+}
+
+/* 演示：马达 → 传动杆 → 齿轮箱 → 三个方向出轴；一串齿轮和大齿轮；离合器、换向器；
+ * 第二台马达经转速控制器带大齿轮 */
+static void build_demo(mcc_region *r, int32_t, int32_t, void *) {
+    if (!r) return;
+    mcc::Space &sp = mcc::region_space((mcc_region_world *)r->data);
+    auto set = [&](int x, int y, int z, mcc_state_t s) { sp.set_block({ x, y, z }, s); };
+    const int Y = 65;
+    set(-6, Y, 4, kstate("create:creative_motor", "facing", "east"));
+    for (int x = -5; x <= -1; x++) set(x, Y, 4, kstate("create:shaft", "axis", "x"));
+    set(0, Y, 4, kstate("create:gearbox", "axis", "y"));
+    for (int x = 1; x <= 3; x++) set(x, Y, 4, kstate("create:shaft", "axis", "x"));
+    set(4, Y, 4, kstate("create:clutch", "axis", "x"));
+    set(5, Y, 4, kstate("create:shaft", "axis", "x"));
+    set(6, Y, 4, kstate("create:gearshift", "axis", "x"));
+    set(7, Y, 4, kstate("create:andesite_encased_shaft", "axis", "x"));
+    set(8, Y, 4, kstate("create:cogwheel", "axis", "x"));
+    /* 轴向 X 的齿轮在 YZ 平面里啮合 */
+    set(8, Y, 5, kstate("create:cogwheel", "axis", "x"));
+    set(8, Y + 1, 6, kstate("create:large_cogwheel", "axis", "x"));
+    set(8, Y + 2, 7, kstate("create:cogwheel", "axis", "x"));
+    for (int z = 5; z <= 8; z++) set(0, Y, z, kstate("create:shaft", "axis", "z"));
+    set(0, Y, 9, kstate("create:brass_encased_shaft", "axis", "z"));
+    for (int z = 3; z >= 0; z--) set(0, Y, z, kstate("create:shaft", "axis", "z"));
+    /* 北边出轴末端：轴向 Z 的齿轮组 */
+    set(0, Y, -1, kstate("create:cogwheel", "axis", "z"));
+    set(1, Y, -1, kstate("create:cogwheel", "axis", "z"));
+    set(2, Y + 1, -1, kstate("create:large_cogwheel", "axis", "z"));
+    /* 第二台马达 → 转速控制器（上面放大齿轮，输出由控制器设定） */
+    set(-6, Y, -6, kstate("create:creative_motor", "facing", "east"));
+    for (int x = -5; x <= -1; x++) set(x, Y, -6, kstate("create:shaft", "axis", "x"));
+    set(0, Y, -6, kstate("create:rotation_speed_controller", "axis", "x"));
+    set(0, Y + 1, -6, kstate("create:large_cogwheel", "axis", "z"));
+    set(1, Y + 2, -6, kstate("create:cogwheel", "axis", "z"));
+}
+
 int main(int argc, char **argv) {
     int port = argc > 1 ? atoi(argv[1]) : 8080;
     int tick_threads = argc > 2 ? atoi(argv[2]) : 2;
@@ -163,13 +212,18 @@ int main(int argc, char **argv) {
 #endif
 
     find_dirs();
-    char p1[1100], p2[1100], p3[1100];
+    char p1[1100], p1c[1100], p2[1100], p2c[1100], p3[1100];
     snprintf(p1, sizeof p1, "%s/blocks.txt", g_data);
+    snprintf(p1c, sizeof p1c, "%s/create/blocks.txt", g_data);
     snprintf(p2, sizeof p2, "%s/shapes.txt", g_data);
+    snprintf(p2c, sizeof p2c, "%s/create/shapes.txt", g_data);
     snprintf(p3, sizeof p3, "%s/phys_props.txt", g_data);
-    if (!mcc_blocks_load(p1)) return 1;
-    if (!phys_block_colliders_load(p2, p3)) return 1;
+    const char *bfiles[] = { p1, p1c }, *sfiles[] = { p2, p2c };
+    if (!mcc_blocks_load_files(bfiles, 2)) return 1;
+    if (!phys_block_colliders_load_files(sfiles, 2, p3)) return 1;
     phys_colliders_finalize();
+    mcc::game_init();
+    if (!mcc::create::create_init(g_data)) return 1;
     if (getenv("MCC_NO_CANON")) phys_set_canonical(false);
     STONE = mcc_block_default_state("stone");
     DIRT = mcc_block_default_state("dirt");
@@ -189,6 +243,7 @@ int main(int argc, char **argv) {
     cfg.tick_threads = tick_threads;
     /* 8.28 倍地球重力（3 × 2.76），调试时下落更利落 */
     cfg.phys = (phys_scene_config){ { 0, -9.81 * 3 * 2.76, 0 }, 0.1 };
+    cfg.tick_hook = demo_tick;
     cfg.post_tick_hook = mcc_viewer_post_tick;
     g_lv = mcc_level_create(&cfg);
     mcc_viewer *v = mcc_viewer_start(g_lv, port, g_web, on_spawn, NULL);
@@ -203,6 +258,8 @@ int main(int argc, char **argv) {
             mcc_viewer_add_chunk(v, cx, cz);
         }
     mcc_store_free(&dims);
+    /* 出生点前面摆一套演示机器 */
+    mcc_regionizer_queue_chunk_task(&g_lv->rz, 0, 0, build_demo, NULL);
     mcc_info("地形 %d×%d 区块已加载，Ctrl+C 退出", AREA * 2, AREA * 2);
 
     while (!g_quit) {
