@@ -493,6 +493,25 @@ struct Held {
 };
 
 static Held g_held;
+
+/* 调转速：连按 [ ] 先在客户端累计，停手半秒再一次发给服务端。
+ * 原版机械动力也是这样（调值界面松手才发包）：每改一次转速，整条传动线上的零件都会
+ * 先停再转，记一次"转速抖动"，短时间改太多次会把零件弄坏（RotationPropagator 的 MAX_FLICKER_SCORE）。 */
+struct Adjust {
+    bool on = false;
+    int x, y, z, delta = 0;
+    double at = 0;
+};
+static Adjust g_adjust;
+
+static void flush_adjust() {
+    if (g_adjust.on && g_adjust.delta) {
+        char cmd[96];
+        snprintf(cmd, sizeof cmd, "adjust %d %d %d %d", g_adjust.x, g_adjust.y, g_adjust.z, g_adjust.delta);
+        net_send(cmd);
+    }
+    g_adjust = Adjust{};
+}
 static double g_last_hold;
 
 static void spawn_at_look(int n) {
@@ -631,9 +650,13 @@ int main(int argc, char **argv) {
             Hit hit;
             bool has_hit = g_world.ready() && raycast_block(eye(), look_dir(), 8, &hit);
             if ((IsKeyPressed(KEY_LEFT_BRACKET) || IsKeyPressed(KEY_RIGHT_BRACKET)) && has_hit) {
-                char cmd[96];
-                snprintf(cmd, sizeof cmd, "adjust %d %d %d %d", hit.x, hit.y, hit.z, IsKeyPressed(KEY_LEFT_BRACKET) ? -8 : 8);
-                net_send(cmd);
+                /* 换了一个方块就先把上一个的改动发出去 */
+                if (g_adjust.on && (g_adjust.x != hit.x || g_adjust.y != hit.y || g_adjust.z != hit.z)) flush_adjust();
+                g_adjust.on = true;
+                g_adjust.x = hit.x; g_adjust.y = hit.y; g_adjust.z = hit.z;
+                g_adjust.delta += IsKeyPressed(KEY_LEFT_BRACKET) ? -8 : 8;
+                g_adjust.at = now;
+                sound_play(SFX_CLICK, 0.3f, 0.02f);
             }
             float wheel = GetMouseWheelMove();
             if (wheel != 0) {
@@ -685,6 +708,7 @@ int main(int argc, char **argv) {
             }
             step_player(dt);
         }
+        if (g_adjust.on && now - g_adjust.at > 0.5) flush_adjust();
         if (g_held.on && !g_bodies.map.count(g_held.id)) g_held.on = false;
         if (g_held.on && now - g_last_hold > 0.033) {
             Vector3 t = Vector3Add(eye(), Vector3Scale(look_dir(), g_held.dist));
@@ -834,7 +858,9 @@ int main(int argc, char **argv) {
                         s += buf;
                     }
                     if (name.find("motor") != std::string::npos || name.find("speed_controller") != std::string::npos) {
-                        snprintf(buf, sizeof buf, "\n设定 %d RPM（[ ] 调整）", r.value);
+                        bool pend = g_adjust.on && g_adjust.x == r.x && g_adjust.y == r.y && g_adjust.z == r.z;
+                        if (pend) snprintf(buf, sizeof buf, "\n设定 %d RPM → %d（松手半秒后生效）", r.value, (int)Clamp((float)(r.value + g_adjust.delta), -256, 256));
+                        else snprintf(buf, sizeof buf, "\n设定 %d RPM（[ ] 调整）", r.value);
                         s += buf;
                     }
                 }
