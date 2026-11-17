@@ -6,7 +6,7 @@
     settings: null, state: {}, features: { tools: {} }, convs: [], conv: null,
     running: new Set(), drafts: new Map(), runningTools: new Map(),
     memory: [], schedules: [], showOlder: false, attachments: [], compacting: false,
-    loaded: false, sending: false,
+    loaded: false, sending: false, leisure: null, moments: [], momentsMore: false,
   }
   const ui = {
     app: $('#app'), history: $('#history'), live: $('#live'), scroller: $('#scroller'), input: $('#input'),
@@ -135,6 +135,8 @@
     x: 'M6 6l12 12M18 6L6 18',
     trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13',
     pen: 'M4 20l4-1 11-11-3-3L5 16z',
+    heart: 'M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z',
+    chat: 'M5 5h14v10H9l-4 4z',
   }
   const svg = (d) => `<svg viewBox="0 0 24 24"><path d="${d}"/></svg>`
   const TOOL_ICON = {
@@ -355,6 +357,9 @@
       if (S.runningTools.size) text = `正在${[...S.runningTools.values()].pop() || '操作'}`
       else if ([...S.drafts.values()].some((d) => d.convId === c.id && d.content)) text = '正在输入'
       else text = '正在想'
+    } else if (S.leisure) {
+      text = `在闲逛：${S.leisure.activity.length > 18 ? `${S.leisure.activity.slice(0, 18)}` : S.leisure.activity}`
+      busy = true
     } else if (S.state?.asleep) text = '睡着了'
     if (ui.status.textContent !== text) ui.status.textContent = text
     ui.status.classList.toggle('busy', busy)
@@ -396,7 +401,7 @@
         ${c.unread && c.id !== S.conv?.id ? `<span class="conv-unread">${c.unread}</span>` : ''}
       </div>`).join('')
     const others = S.convs.some((c) => c.id !== S.conv?.id && c.unread)
-    $('#menuDot').hidden = !others
+    $('#menuDot').hidden = !others && !unseenMoments()
   }
 
   $('#convList').addEventListener('click', async (e) => {
@@ -516,7 +521,9 @@
     S.running = new Set(st.running)
     S.memory = st.memory
     S.schedules = st.schedules
+    S.leisure = st.leisure
     S.loaded = true
+    loadMoments()
     await loadConv(st.mainId)
     loadMusic()
     connectEvents()
@@ -530,6 +537,7 @@
       S.running = new Set(st.running)
       S.memory = st.memory
       S.schedules = st.schedules
+      S.leisure = st.leisure
       renderConvList()
       updateStatus()
     } catch {}
@@ -688,6 +696,26 @@
       case 'stats':
         S.state = { ...S.state, ...ev.state }
         break
+      case 'leisure':
+        S.leisure = ev.active ? { activity: ev.activity, since: Date.now() } : null
+        updateStatus()
+        if (sheetKind === 'moments') renderFeedBar()
+        break
+      case 'moment_new':
+        if (!S.moments.some((m) => m.id === ev.moment.id)) S.moments.unshift(ev.moment)
+        if (sheetKind === 'moments' && ui.sheet.open && momentsTab === 'feed') { renderFeed(); markMomentsSeen() }
+        updateMomentDot()
+        break
+      case 'moment_update': {
+        const i = S.moments.findIndex((m) => m.id === ev.moment.id)
+        if (i >= 0) S.moments[i] = ev.moment
+        if (sheetKind === 'moments' && ui.sheet.open) updateMomentEl(ev.moment)
+        break
+      }
+      case 'moment_removed':
+        S.moments = S.moments.filter((m) => m.id !== ev.id)
+        if (sheetKind === 'moments' && ui.sheet.open) $(`.moment[data-id="${ev.id}"]`, ui.sheet)?.remove()
+        break
       case 'settings':
         S.settings = ev.settings
         S.features = ev.features
@@ -790,7 +818,11 @@
     if (e.target === ui.sheet || e.target.closest('[data-close]')) ui.sheet.close()
   })
   const closeBtn = `<button class="icon-btn" type="button" data-close aria-label="关闭">${svg(P.x)}</button>`
+  let sheetKind = ''
+  ui.sheet.addEventListener('close', () => { sheetKind = '' })
   function openSheet(kind, tab) {
+    sheetKind = kind
+    if (kind === 'moments') renderMoments(tab)
     if (kind === 'memory') renderMemory(tab)
     if (kind === 'settings') renderSettings(tab)
     if (!ui.sheet.open) ui.sheet.showModal()
@@ -842,6 +874,129 @@
     })
   }
 
+
+  // ---------------- 朋友圈 ----------------
+  let momentsTab = 'feed'
+  const seenKey = 'yz-moments-seen'
+  const unseenMoments = () => S.moments.some((m) => m.ts > (+store.get(seenKey) || 0))
+  function updateMomentDot() {
+    $('#momentDot').hidden = !unseenMoments()
+    renderConvList()
+  }
+  function markMomentsSeen() {
+    if (S.moments[0]) store.set(seenKey, String(S.moments[0].ts))
+    updateMomentDot()
+  }
+  async function loadMoments(more) {
+    try {
+      const before = more && S.moments.length ? S.moments[S.moments.length - 1].ts : ''
+      const r = await api(`/api/moments${before ? `?before=${before}` : ''}`)
+      S.moments = more ? S.moments.concat(r.items) : r.items
+      S.momentsMore = r.more
+      S.leisure = r.leisure
+      updateMomentDot()
+      updateStatus()
+    } catch {}
+  }
+
+  function momentHtml(m) {
+    const pics = m.images?.length ? `<div class="pics shots">${m.images.map((id) => `<img src="/api/files/${encodeURIComponent(id)}" alt="截图" loading="lazy">`).join('')}</div>` : ''
+    const cmts = m.comments?.length ? `<div class="cmts">${m.comments.map((c) => `<div><b>${c.who === 'me' ? '你' : '她'}</b>${esc(c.text)}</div>`).join('')}</div>` : ''
+    return `<article class="moment" data-id="${esc(m.id)}">
+      <div class="m-text">${inline(m.text)}</div>
+      ${pics}
+      <div class="m-meta"><span class="m-src">${fmtTime(m.ts)}${m.source ? `　逛的是：${esc(m.source)}` : ''}</span>
+        <button class="m-btn${m.liked ? ' on' : ''}" type="button" data-like="${esc(m.id)}" aria-label="赞">${svg(P.heart)}${m.liked ? '已赞' : '赞'}</button>
+        <button class="m-btn" type="button" data-cmt="${esc(m.id)}" aria-label="评论">${svg(P.chat)}评论</button>
+      </div>
+      <div class="m-cmts">${cmts}</div>
+      <form class="m-reply" data-reply="${esc(m.id)}" hidden><input type="text" maxlength="500" placeholder="说点什么" enterkeyhint="send"><button class="btn" type="submit">发送</button></form>
+    </article>`
+  }
+  function updateMomentEl(m) {
+    const el = $(`.moment[data-id="${m.id}"]`, ui.sheet)
+    if (!el) return
+    const like = $('[data-like]', el)
+    like.classList.toggle('on', !!m.liked)
+    like.innerHTML = `${svg(P.heart)}${m.liked ? '已赞' : '赞'}`
+    $('.m-cmts', el).innerHTML = m.comments?.length ? `<div class="cmts">${m.comments.map((c) => `<div><b>${c.who === 'me' ? '你' : '她'}</b>${esc(c.text)}</div>`).join('')}</div>` : ''
+  }
+  function renderFeedBar() {
+    const bar = $('#feedBar', ui.sheet)
+    if (!bar) return
+    bar.innerHTML = S.leisure
+      ? `<span class="now">她正在闲逛：${esc(S.leisure.activity)}</span>`
+      : `<span>她闲着的时候会自己去逛，看到有意思的就发在这里</span><button class="btn" type="button" id="goNow">让她现在去逛</button>`
+    $('#goNow', bar)?.addEventListener('click', (e) => once(e.currentTarget, async () => {
+      try {
+        await api('/api/leisure/now', { method: 'POST', body: {} })
+        S.leisure = { activity: '出门了', since: Date.now() }
+        renderFeedBar()
+      } catch (err) { toast(err.message, 'bad') }
+    }))
+  }
+  function renderFeed() {
+    const box = $('#feed', ui.sheet)
+    if (!box) return
+    box.innerHTML = S.moments.length
+      ? S.moments.map(momentHtml).join('') + (S.momentsMore ? '<div style="padding-top:12px"><button class="btn" type="button" id="feedMore">更早的</button></div>' : '')
+      : '<div class="empty">还没有动态</div>'
+    $('#feedMore', box)?.addEventListener('click', async () => { await loadMoments(true); renderFeed() })
+  }
+  async function renderTrips() {
+    const box = $('#trips', ui.sheet)
+    if (!box) return
+    try {
+      const r = await api('/api/leisure/log')
+      box.innerHTML = r.log.length ? r.log.map((e) => `<div class="trip"><b>${esc(e.activity)}</b>${e.posted ? '<span class="tag" style="display:inline-block">发了动态</span>' : ''}<span>${fmtTime(e.ts)}${e.note ? `　${esc(e.note)}` : ''}</span></div>`).join('') : '<div class="empty">她还没出去逛过</div>'
+    } catch (err) { box.innerHTML = `<div class="empty">${esc(err.message)}</div>` }
+  }
+  async function renderMoments(tab = 'feed') {
+    momentsTab = tab
+    ui.sheet.innerHTML = `
+      <div class="sheet-head"><h3>朋友圈</h3>${closeBtn}</div>
+      ${tabsHtml([['feed', '动态'], ['trips', '足迹']], tab)}
+      <div class="sheet-body">
+        <div class="feed-bar" id="feedBar"></div>
+        ${tab === 'feed' ? '<div id="feed"></div>' : '<div id="trips"><div class="empty">读取中</div></div>'}
+      </div>`
+    $$('.tabs button', ui.sheet).forEach((b) => b.addEventListener('click', () => renderMoments(b.dataset.tab)))
+    renderFeedBar()
+    if (tab === 'feed') {
+      renderFeed()
+      await loadMoments()
+      renderFeed()
+      markMomentsSeen()
+    } else renderTrips()
+    const body = $('.sheet-body', ui.sheet)
+    body.addEventListener('click', async (e) => {
+      const like = e.target.closest('[data-like]')
+      const cmt = e.target.closest('[data-cmt]')
+      if (like) {
+        try { await api(`/api/moments/${like.dataset.like}/like`, { method: 'POST', body: {} }) } catch (err) { toast(err.message, 'bad') }
+      } else if (cmt) {
+        const form = $(`[data-reply="${cmt.dataset.cmt}"]`, body)
+        form.hidden = !form.hidden
+        if (!form.hidden) $('input', form).focus()
+      }
+    })
+    body.addEventListener('submit', async (e) => {
+      const form = e.target.closest('[data-reply]')
+      if (!form) return
+      e.preventDefault()
+      const input = $('input', form)
+      const text = input.value.trim()
+      if (!text) return
+      await once($('button', form), async () => {
+        try {
+          await api(`/api/moments/${form.dataset.reply}/comments`, { method: 'POST', body: { text } })
+          input.value = ''
+          form.hidden = true
+        } catch (err) { toast(err.message, 'bad') }
+      })
+    })
+  }
+
   const CHATTY = { 1: '很少', 2: '偶尔', 3: '时不时', 4: '经常', 5: '非常频繁' }
   const EFFORT = { none: '不思考', low: '简单想想', high: '认真想', max: '深入想' }
   const TIMEZONES = ['Asia/Shanghai', 'Asia/Hong_Kong', 'Asia/Taipei', 'Asia/Tokyo', 'Asia/Seoul', 'Asia/Singapore', 'Europe/London', 'Europe/Berlin', 'America/New_York', 'America/Los_Angeles', 'Australia/Sydney']
@@ -854,7 +1009,7 @@
     const radioOpt = (name, v, cur, label) => `<label><input type="radio" name="${name}" value="${v}"${v === cur ? ' checked' : ''}>${label}</label>`
     ui.sheet.innerHTML = `
       <div class="sheet-head"><h3>设置</h3>${closeBtn}</div>
-      ${tabsHtml([['role', '角色'], ['master', '最高指令'], ['chat', '主动聊天'], ['model', '模型'], ['sound', '声音'], ['account', '账号']], tab)}
+      ${tabsHtml([['role', '角色'], ['master', '最高指令'], ['chat', '主动聊天'], ['leisure', '闲逛'], ['model', '模型'], ['sound', '声音'], ['account', '账号']], tab)}
       <form class="sheet-body" id="setForm" autocomplete="off">
         <section class="pane" data-pane="role">
           <div class="two">
@@ -889,6 +1044,17 @@
           </div>
           <p class="hint">每天会前后浮动半小时左右。睡着时不会主动来，约好的提醒除外。</p>
           <div><button class="btn" type="button" id="pokeNow">现在试一次</button></div>
+        </section>
+
+        <section class="pane" data-pane="leisure">
+          <label class="switch"><input type="checkbox" id="sLe"${s.leisure?.enabled ? ' checked' : ''}>闲着的时候自己去逛</label>
+          <div class="field"><label for="sLeEvery">多久去一次</label>
+            <select id="sLeEvery">${[3, 6, 10, 20, 40, 90].map((n) => opt(String(n), String(s.leisure?.everyMin), `平均每 ${n} 分钟一次`)).join('')}</select>
+            <p class="hint">间隔是随机的，只是平均下来这么频繁。睡着的时候不逛。看到有意思的会发朋友圈。</p></div>
+          <div class="field"><label for="sLeActs">她会去干什么</label>
+            <p class="hint">一行写一件事，一句话就行，不用写网址，她自己会找。每次随机挑一件。</p>
+            <textarea id="sLeActs" class="tall">${esc((s.leisure?.activities || []).join('\n'))}</textarea></div>
+          <div class="notice">费用估算：每次闲逛大约花 2 到 5 分钱人民币（要看网页内容多少）。平均 6 分钟一次的话，醒着的时候一天大约 3 到 8 元。想省钱就调低频率。</div>
         </section>
 
         <section class="pane" data-pane="model">
@@ -977,6 +1143,7 @@
         proactive: { enabled: q('#sPro').checked, chattiness: +q('#sChat').value, sleepStart: q('#sSleep').value, sleepEnd: q('#sWake').value },
         model: q('#sModel').value, effort: q('#sEffort').value, vision: $('input[name="vis"]:checked', ui.sheet)?.value,
         compactAt: +q('#sCompact').value, keepRecent: +q('#sKeep').value,
+        leisure: { enabled: q('#sLe').checked, everyMin: +q('#sLeEvery').value, activities: q('#sLeActs').value.split('\n') },
       }
       await once($('.sheet-foot .btn-primary', ui.sheet), async () => {
         try {

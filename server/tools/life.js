@@ -1,6 +1,8 @@
 // 让柚柚"像个人"的工具：记事、约时间主动找你、换心情
 import { addMemory, removeMemory, getMemory, addSchedule, getSchedules, updateSchedules, patchState } from '../store.js'
 import { zonedToDate, localParts } from '../util.js'
+import { addMoment } from '../store.js'
+import { broadcast } from '../bus.js'
 
 export const MOODS = {
   happy: '开心', shy: '害羞', sleepy: '困', pouty: '鼓着脸', excited: '兴奋', worried: '担心', focused: '认真', sad: '难过',
@@ -96,6 +98,32 @@ export const lifeTools = [
       await patchState({ mood: a.mood })
       ctx.emit({ type: 'mood', mood: a.mood })
       return `现在的心情：${MOODS[a.mood]}`
+    },
+  },
+]
+
+export const momentTools = [
+  {
+    name: 'post_moment',
+    kind: 'safe',
+    label: '发朋友圈',
+    description: `发一条朋友圈动态，对方能看到、点赞、评论。像真人发朋友圈一样：一两句话，带着你自己的感受和态度，不要写成新闻摘要或者介绍文。with_screenshot=true 会配上你刚才在浏览器里截的最后一张图。同样的东西不要重复发。`,
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '朋友圈的文字' },
+        with_screenshot: { type: 'boolean', description: '配上刚才浏览器里的最后一张截图' },
+      },
+      required: ['text'],
+    },
+    summary: (a) => a.text,
+    async run(a, ctx) {
+      const text = String(a.text || '').trim().slice(0, 1000)
+      if (!text) return '错误：内容是空的'
+      const images = a.with_screenshot && ctx.lastShot ? [ctx.lastShot] : []
+      const m = await addMoment({ text, images, source: ctx.activity || '' })
+      broadcast({ type: 'moment_new', moment: m })
+      return `发好了${images.length ? '（配了截图）' : ''}`
     },
   },
 ]

@@ -85,6 +85,7 @@ async function executeTool(call, ctx) {
   ctx.emit({ type: 'tool_start', callId: call.id, name: tool.name, label: tool.label, summary: safeSummary(tool, args) })
   try {
     const r = await tool.run(args, ctx)
+    if (r?.images?.length) ctx.lastShot = r.images[r.images.length - 1].fileId
     return typeof r === 'string' ? { text: r } : { text: r.text || '', images: r.images }
   } catch (e) {
     return { text: `出错了：${e.message}` }
@@ -92,21 +93,24 @@ async function executeTool(call, ctx) {
 }
 
 // 跑一轮：调模型 → 有工具调用就执行 → 再调模型 …… 直到它不再调用工具
-export async function runTurn(conv, { proactive = false, triggerId = null } = {}) {
+// ephemeral: 后台活动（闲逛、回评论）用，不保存到聊天记录，也不推送到聊天界面
+export async function runTurn(conv, { proactive = false, triggerId = null, ephemeral = false, maxSteps = MAX_STEPS, browserKey = 'main', emit = null, effort = null, extra = {} } = {}) {
   if (running.has(conv.id)) throw Object.assign(new Error('还在回上一句，等一下'), { status: 409 })
   const ctrl = new AbortController()
   running.set(conv.id, { ctrl })
   const s = getSettings()
   const ctx = {
-    settings: s, conv, proactive, vision: visionOn(s), signal: ctrl.signal, workdir: workdir(),
-    emit: (e) => broadcast({ ...e, convId: conv.id }),
+    settings: s, conv, proactive, vision: visionOn(s), signal: ctrl.signal, workdir: workdir(), browserKey, lastShot: null,
+    emit: emit || (ephemeral ? () => {} : (e) => broadcast({ ...e, convId: conv.id })),
   }
+  Object.assign(ctx, extra)
+  const save = ephemeral ? async () => {} : saveConversation
   const produced = []
   let usedTools = false
   ctx.emit({ type: 'turn_start', proactive })
   try {
-    await maybeCompact(conv, ctx)
-    for (let step = 0; step < MAX_STEPS; step++) {
+    if (!ephemeral) await maybeCompact(conv, ctx)
+    for (let step = 0; step < maxSteps; step++) {
       const messages = [{ role: 'system', content: buildSystemPrompt(s, ctx) }]
       if (conv.summary?.text) {
         messages.push({ role: 'system', content: `【以前的回忆】更早的聊天记录已经整理成了下面这份笔记，当作你自己的记忆：\n${conv.summary.text}` })
@@ -119,7 +123,7 @@ export async function runTurn(conv, { proactive = false, triggerId = null } = {}
       let calls = []
       let usage = null
       ctx.emit({ type: 'assistant_start', id })
-      for await (const ev of streamChat({ model: s.model, messages, tools: apiTools(), effort: s.effort, signal: ctrl.signal })) {
+      for await (const ev of streamChat({ model: s.model, messages, tools: apiTools(), effort: effort || s.effort, signal: ctrl.signal })) {
         if (ev.type === 'reasoning') { reasoning += ev.text; ctx.emit({ type: 'reasoning', id, text: ev.text }) }
         else if (ev.type === 'content') { content += ev.text; ctx.emit({ type: 'content', id, text: ev.text }) }
         else if (ev.type === 'tool_calls') calls = ev.calls
@@ -134,7 +138,7 @@ export async function runTurn(conv, { proactive = false, triggerId = null } = {}
         ...(proactive ? { proactive: true } : {}),
       })
       produced.push(msg)
-      await saveConversation(conv)
+      await save(conv)
       ctx.emit({ type: 'assistant_done', message: msg })
       if (!calls.length) break
 
@@ -146,11 +150,11 @@ export async function runTurn(conv, { proactive = false, triggerId = null } = {}
           role: 'tool', tool_call_id: call.id, name: call.name, content: r.text,
           ...(r.images?.length ? { images: r.images.map((x) => x.fileId) } : {}),
         })
-        await saveConversation(conv)
+        await save(conv)
         ctx.emit({ type: 'tool_done', callId: call.id, message: tm })
       }
       if (ctrl.signal.aborted) break
-      if (step === MAX_STEPS - 1) {
+      if (step === maxSteps - 1 && !ephemeral) {
         const ev = addMessage(conv, { role: 'event', kind: 'info', content: `连续做了 ${MAX_STEPS} 步，先停下来喘口气。要继续就跟她说一声。` })
         ctx.emit({ type: 'event', message: ev })
       }
@@ -185,7 +189,7 @@ export async function runTurn(conv, { proactive = false, triggerId = null } = {}
       } else last.content = last.content.replace(/\[SKIP\]/gi, '').trim()
     }
   }
-  await saveConversation(conv)
+  await save(conv)
   ctx.emit({ type: 'turn_end', skipped })
   return { produced: skipped ? [] : produced, skipped }
 }

@@ -10,30 +10,45 @@ try {
 export const browserAvailable = !!pw
 
 let browser = null
-let page = null
-let idleTimer = null
+const tabs = new Map() // key -> { context, page, timer }（聊天和后台闲逛各用各的标签页，互不干扰）
 
-async function getPage() {
-  clearTimeout(idleTimer)
-  idleTimer = setTimeout(closeBrowser, 5 * 60 * 1000) // 5 分钟不用就关掉，省内存
-  if (page && !page.isClosed()) return page
-  if (!browser) {
-    browser = await pw.chromium.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-      ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),
-    })
+async function getPage(key = 'main') {
+  let t = tabs.get(key)
+  if (t) clearTimeout(t.timer)
+  if (!t || t.page.isClosed()) {
+    if (!browser || !browser.isConnected()) {
+      browser = await pw.chromium.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+        ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),
+      })
+    }
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: 'zh-CN' })
+    t = { context, page: await context.newPage(), timer: null }
+    tabs.set(key, t)
   }
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: 'zh-CN' })
-  page = await context.newPage()
-  return page
+  t.timer = setTimeout(() => closeTab(key), 5 * 60 * 1000) // 5 分钟不用就关掉，省内存
+  return t.page
+}
+const current = (ctx) => {
+  const t = tabs.get(ctx.browserKey || 'main')
+  return t && !t.page.isClosed() ? t.page : null
+}
+
+async function closeTab(key) {
+  const t = tabs.get(key)
+  if (!t) return
+  clearTimeout(t.timer)
+  tabs.delete(key)
+  try { await t.context.close() } catch {}
+  if (!tabs.size) {
+    try { await browser?.close() } catch {}
+    browser = null
+  }
 }
 
 export async function closeBrowser() {
-  clearTimeout(idleTimer)
-  try { await browser?.close() } catch {}
-  browser = null
-  page = null
+  for (const key of [...tabs.keys()]) await closeTab(key)
 }
 
 // 给页面上能点能填的东西编号，返回文字版的页面
@@ -89,7 +104,7 @@ export const browserTools = !pw ? [] : [
     parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
     summary: (a) => a.url,
     async run(a, ctx) {
-      const p = await getPage()
+      const p = await getPage(ctx.browserKey)
       await p.goto(a.url, { timeout: 30000, waitUntil: 'domcontentloaded' })
       return after(p, ctx, true)
     },
@@ -102,6 +117,7 @@ export const browserTools = !pw ? [] : [
     parameters: { type: 'object', properties: { screenshot: { type: 'boolean', description: '要不要截图，默认要' } } },
     summary: () => '当前页面',
     async run(a, ctx) {
+      const page = current(ctx)
       if (!page) return '还没有打开任何网页，先用 browser_open'
       return after(page, ctx, a.screenshot !== false)
     },
@@ -114,6 +130,7 @@ export const browserTools = !pw ? [] : [
     parameters: { type: 'object', properties: { ref: { type: 'number', description: '元素编号' } }, required: ['ref'] },
     summary: (a) => `元素 [${a.ref}]`,
     async run(a, ctx) {
+      const page = current(ctx)
       if (!page) return '还没有打开任何网页'
       await page.click(refSel(a.ref), { timeout: 10000 })
       return after(page, ctx, true)
@@ -131,6 +148,7 @@ export const browserTools = !pw ? [] : [
     },
     summary: (a) => `在 [${a.ref}] 输入「${String(a.text).slice(0, 40)}」`,
     async run(a, ctx) {
+      const page = current(ctx)
       if (!page) return '还没有打开任何网页'
       await page.fill(refSel(a.ref), String(a.text), { timeout: 10000 })
       if (a.submit) await page.press(refSel(a.ref), 'Enter')
@@ -145,6 +163,7 @@ export const browserTools = !pw ? [] : [
     parameters: { type: 'object', properties: { direction: { type: 'string', enum: ['down', 'up', 'top', 'bottom'] } }, required: ['direction'] },
     summary: (a) => ({ down: '往下', up: '往上', top: '到顶', bottom: '到底' })[a.direction] || a.direction,
     async run(a, ctx) {
+      const page = current(ctx)
       if (!page) return '还没有打开任何网页'
       await page.evaluate((d) => {
         if (d === 'top') scrollTo(0, 0)
@@ -162,6 +181,7 @@ export const browserTools = !pw ? [] : [
     parameters: { type: 'object', properties: {} },
     summary: () => '上一页',
     async run(a, ctx) {
+      const page = current(ctx)
       if (!page) return '还没有打开任何网页'
       await page.goBack({ timeout: 15000 }).catch(() => {})
       return after(page, ctx, true)
@@ -174,8 +194,8 @@ export const browserTools = !pw ? [] : [
     description: '用完关掉浏览器，释放内存。',
     parameters: { type: 'object', properties: {} },
     summary: () => '收工',
-    async run() {
-      await closeBrowser()
+    async run(a, ctx) {
+      await closeTab(ctx.browserKey || 'main')
       return '浏览器关掉了'
     },
   },

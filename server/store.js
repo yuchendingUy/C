@@ -43,6 +43,18 @@ export const DEFAULT_SETTINGS = {
   },
   compactAt: 120000,
   keepRecent: 16000,
+  leisure: {
+    enabled: true,
+    everyMin: 6,
+    activities: [
+      '去B站首页看看现在推荐了什么新视频',
+      '看看B站热门榜上大家都在看什么',
+      '随便读一篇维基百科的随机条目',
+      '看看 GitHub 上今天流行的项目',
+      '看看豆瓣上最近在热映什么电影',
+      '找找今天有什么新鲜的科技新闻',
+    ],
+  },
 }
 
 const DEFAULT_STATE = {
@@ -224,4 +236,38 @@ export async function setSecret(k, v) {
     await writeJSON(SECRETS, secrets)
     await fsp.chmod(SECRETS, 0o600).catch(() => {})
   })
+}
+
+// ---------- 朋友圈 ----------
+const MOMENTS = path.join(DATA, 'moments.json')
+let moments = readJSON(MOMENTS, [])
+const saveMoments = () => serial('moments', () => writeJSON(MOMENTS, moments))
+export const getMoments = () => moments
+export async function addMoment(m) {
+  const item = { id: uid(8), ts: Date.now(), liked: false, comments: [], images: [], ...m }
+  moments.push(item)
+  if (moments.length > 500) moments = moments.slice(-500)
+  await saveMoments()
+  return item
+}
+export async function updateMoment(id, fn) {
+  const m = moments.find((x) => x.id === id)
+  if (!m) return null
+  fn(m)
+  await saveMoments()
+  return m
+}
+export async function removeMoment(id) {
+  moments = moments.filter((x) => x.id !== id)
+  await saveMoments()
+}
+
+// ---------- 闲逛记录 ----------
+const LEISURE_LOG = path.join(DATA, 'leisure-log.json')
+let leisureLog = readJSON(LEISURE_LOG, [])
+export const getLeisureLog = () => leisureLog
+export async function addLeisureLog(e) {
+  leisureLog.push({ ts: Date.now(), ...e })
+  if (leisureLog.length > 200) leisureLog = leisureLog.slice(-200)
+  await serial('leisure-log', () => writeJSON(LEISURE_LOG, leisureLog))
 }

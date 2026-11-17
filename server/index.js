@@ -15,6 +15,7 @@ const { browserAvailable, toolMeta } = await import('./tools/index.js')
 const { MOODS } = await import('./tools/life.js')
 const push = await import('./push.js')
 const { startProactive, noteUserActivity, fire, isAsleep } = await import('./proactive.js')
+const leisure = await import('./leisure.js')
 
 const PORT = Number(process.env.PORT || 8787)
 const HOST = process.env.HOST || '0.0.0.0'
@@ -161,6 +162,15 @@ function cleanSettings(input, cur) {
     sleepStart: hhmm(p.sleepStart, s.proactive.sleepStart),
     sleepEnd: hhmm(p.sleepEnd, s.proactive.sleepEnd),
   }
+  if (input.leisure) {
+    const L = input.leisure
+    const acts = Array.isArray(L.activities) ? L.activities : String(L.activities || '').split('\n')
+    s.leisure = {
+      enabled: L.enabled !== undefined ? !!L.enabled : s.leisure.enabled,
+      everyMin: clampNum(L.everyMin, 2, 240, s.leisure.everyMin),
+      activities: acts.map((x) => String(x).trim().slice(0, 200)).filter(Boolean).slice(0, 40),
+    }
+  }
   s.compactAt = clampNum(input.compactAt, 20000, 800000, s.compactAt)
   s.keepRecent = clampNum(input.keepRecent, 4000, 200000, s.keepRecent)
   return s
@@ -206,6 +216,7 @@ route('GET', '/api/state', async (req, res) => {
     mainId: main.id,
     conversations: store.listConversations(),
     running: runningIds(),
+    leisure: leisure.leisureStatus(),
     features: features(),
     memory: store.getMemory(),
     schedules: store.getSchedules(),
@@ -368,6 +379,44 @@ route('GET', '/music/:name', (req, res, p) => {
   f ? serveFile(req, res, f, { cache: 'private, max-age=86400' }) : fail(res, 404, '找不到')
 })
 
+// 朋友圈
+route('GET', '/api/moments', (req, res) => {
+  const url = new URL(req.url, 'http://x')
+  const before = Number(url.searchParams.get('before')) || Infinity
+  const all = store.getMoments().filter((m) => m.ts < before)
+  const items = all.slice(-30).reverse()
+  send(res, 200, { items, more: all.length > 30, leisure: leisure.leisureStatus() })
+})
+route('POST', '/api/moments/:id/like', async (req, res, p) => {
+  const m = await store.updateMoment(p.id, (x) => { x.liked = !x.liked })
+  if (!m) return fail(res, 404, '没有这条')
+  broadcast({ type: 'moment_update', moment: m })
+  send(res, 200, m)
+})
+route('POST', '/api/moments/:id/comments', async (req, res, p) => {
+  const { text } = await readJSONBody(req)
+  const t = String(text || '').trim().slice(0, 500)
+  if (!t) return fail(res, 400, '写点什么')
+  const m = await store.updateMoment(p.id, (x) => x.comments.push({ id: Math.random().toString(36).slice(2, 8), who: 'me', text: t, ts: Date.now() }))
+  if (!m) return fail(res, 404, '没有这条')
+  broadcast({ type: 'moment_update', moment: m })
+  send(res, 200, m)
+  leisure.replyToComment(p.id)
+})
+route('DELETE', '/api/moments/:id', async (req, res, p) => {
+  await store.removeMoment(p.id)
+  broadcast({ type: 'moment_removed', id: p.id })
+  send(res, 200, { ok: true })
+})
+route('GET', '/api/leisure/log', (req, res) => send(res, 200, { log: store.getLeisureLog().slice(-60).reverse(), current: leisure.leisureStatus() }))
+route('POST', '/api/leisure/now', async (req, res) => {
+  const { activity } = await readJSONBody(req)
+  if (leisure.leisureStatus()) return fail(res, 409, '她已经在逛了')
+  if (!hasKey()) return fail(res, 400, '还没有填 DeepSeek 密钥')
+  send(res, 202, { ok: true })
+  leisure.goOut(activity ? String(activity).slice(0, 200) : undefined).catch((e) => console.error('[leisure now]', e))
+})
+
 route('GET', '/api/push/key', (req, res) => send(res, 200, { key: push.publicKey(), available: push.pushAvailable() }))
 route('POST', '/api/push/subscribe', async (req, res) => {
   await push.subscribe(await readJSONBody(req))
@@ -422,6 +471,7 @@ server.listen(PORT, HOST, () => {
   if (!hasKey()) console.warn('⚠ 还没有 DeepSeek 密钥，进网站后在「小本本」里填')
 })
 startProactive()
+leisure.startLeisure()
 
 const shutdown = () => {
   server.close()
