@@ -1,6 +1,6 @@
 // 房间里的小收音机
 //  1. 你上传的歌（放在服务器 data/music/ 里）
-//  2. 没有上传的话，就现场生成一首日系小曲：王道进行 IV–V–iii–vi + 五声音阶旋律 + 轻轻的鼓
+//  2. 没有上传的话，就现场生成轻音乐：王道进行 IV–V–iii–vi + 五声音阶旋律 + 轻轻的鼓
 ;(function () {
   const NOTE = (n) => 440 * Math.pow(2, (n - 69) / 12) // MIDI → 频率
 
@@ -179,7 +179,7 @@
       this.audio.preload = 'none'
       this.audio.addEventListener('ended', () => this.next())
       this.audio.addEventListener('error', () => { if (this.index >= 0) this.next() })
-      this.volume = 0.6
+      this.volume = 0.35
       try {
         const v = parseFloat(localStorage.getItem('yz-volume'))
         if (v >= 0 && v <= 1) this.volume = v
@@ -202,7 +202,7 @@
       if (this.index >= this.tracks.length) this.index = -1
     }
     title() {
-      if (this.index < 0) return { title: '柚子汽水', sub: '现场生成的小曲' }
+      if (this.index < 0) return { title: '轻音乐', sub: '现场生成' }
       const name = this.tracks[this.index].replace(/\.[^.]+$/, '')
       return { title: name, sub: `第 ${this.index + 1} / ${this.tracks.length} 首` }
     }

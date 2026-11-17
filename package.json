@@ -2,7 +2,7 @@
   "name": "yuzu-room",
   "version": "0.1.0",
   "private": true,
-  "description": "柚柚的房间：会主动找你、能在服务器上干活的小伙伴",
+  "description": "小屋：会主动找你、能在服务器上干活的小伙伴",
   "type": "module",
   "main": "server/index.js",
   "scripts": {

@@ -266,7 +266,7 @@ route('POST', '/api/chat', async (req, res) => {
   const c = store.getConversation(convId)
   if (!c) return fail(res, 404, '没有这一页')
   if (!hasKey()) return fail(res, 400, '还没有填 DeepSeek 密钥，去「小本本」里填一下')
-  if (isRunning(c.id)) return fail(res, 409, `${store.getSettings().charName}还在说话，等她说完或者先叫停`)
+  if (isRunning(c.id)) return fail(res, 409, '还在回上一句，等说完或者先停下')
   const content = String(text || '').slice(0, 50000)
   const fileIds = []
   for (const img of (Array.isArray(images) ? images : []).slice(0, 6)) {
@@ -380,7 +380,7 @@ route('POST', '/api/push/unsubscribe', async (req, res) => {
 })
 route('POST', '/api/push/test', async (req, res) => {
   const s = store.getSettings()
-  await push.notifyAll({ title: `${s.charName}`, body: '叮咚～通知可以收到啦 (＞ω＜)', tag: 'yuzu-test' })
+  await push.notifyAll({ title: '小屋', body: '通知可以收到了', tag: 'yuzu-test' })
   send(res, 200, { ok: true })
 })
 
@@ -417,7 +417,7 @@ const server = http.createServer(async (req, res) => {
 
 await push.initPush()
 server.listen(PORT, HOST, () => {
-  console.log(`柚柚的房间开门了：http://${HOST === '0.0.0.0' ? '服务器IP' : HOST}:${PORT}`)
+  console.log(`网站已启动：http://${HOST === '0.0.0.0' ? '服务器IP' : HOST}:${PORT}`)
   if (!process.env.SITE_PASSWORD && !store.getSecret('passHash')) console.warn('⚠ 还没设置暗号（.env 里的 SITE_PASSWORD），现在谁都进不来')
   if (!hasKey()) console.warn('⚠ 还没有 DeepSeek 密钥，进网站后在「小本本」里填')
 })

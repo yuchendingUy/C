@@ -1,9 +1,9 @@
 {
-  "name": "柚柚的房间",
-  "short_name": "柚柚",
+  "name": "小屋",
+  "short_name": "小屋",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#FFF1D0",
-  "theme_color": "#FFC52E",
+  "background_color": "#F4F1EA",
+  "theme_color": "#F4F1EA",
   "icons": [{ "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
 }

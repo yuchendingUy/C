@@ -3,23 +3,22 @@
   const $$ = (s, el = document) => [...el.querySelectorAll(s)]
 
   const S = {
-    settings: null, state: {}, features: { tools: {}, moods: {} }, convs: [], mainId: null,
-    conv: null, running: new Set(), drafts: new Map(), runningTools: new Set(), toolLabel: '',
-    showOlder: false, attachments: [], compacting: false, loaded: false, needLogin: true,
+    settings: null, state: {}, features: { tools: {} }, convs: [], conv: null,
+    running: new Set(), drafts: new Map(), runningTools: new Map(),
+    memory: [], schedules: [], showOlder: false, attachments: [], compacting: false,
+    loaded: false, sending: false,
   }
   const ui = {
-    history: $('#history'), live: $('#live'), scroller: $('#scroller'), input: $('#input'), send: $('#sendBtn'),
-    mascot: $('#mascot'), say: $('#say'), sheet: $('#sheet'), toasts: $('#toasts'), jump: $('#jumpBtn'),
+    app: $('#app'), history: $('#history'), live: $('#live'), scroller: $('#scroller'), input: $('#input'),
+    send: $('#sendBtn'), sheet: $('#sheet'), toasts: $('#toasts'), jump: $('#jumpBtn'), status: $('#status'),
   }
 
   // ---------------- 小工具 ----------------
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   const store = {
     get(k) { try { return localStorage.getItem(k) } catch { return null } },
     set(k, v) { try { localStorage.setItem(k, v) } catch {} },
   }
-  const coarse = matchMedia('(pointer: coarse)').matches
 
   async function api(path, opts = {}) {
     const init = { method: opts.method || 'GET', headers: {}, credentials: 'same-origin' }
@@ -32,20 +31,28 @@
     let data = null
     try { data = await res.json() } catch {}
     if (res.status === 401 && !path.startsWith('/api/login')) {
-      showDoor(true)
-      throw new Error('先对暗号')
+      showLogin()
+      throw new Error('请先输入暗号')
     }
     if (!res.ok) throw Object.assign(new Error(data?.error || `出错了（${res.status}）`), { status: res.status })
     return data
   }
 
-  function toast(text, kind = '', ms = 3200, onclick) {
+  function toast(text, kind = '', ms = 3000, onclick) {
     const el = document.createElement('div')
-    el.className = `toast ${kind}`
+    el.className = `toast ${kind}${onclick ? ' click' : ''}`
     el.textContent = text
     if (onclick) el.addEventListener('click', () => { onclick(); el.remove() })
     ui.toasts.append(el)
     setTimeout(() => el.remove(), ms)
+  }
+
+  // 防连点：按钮在请求期间失效
+  async function once(btn, fn) {
+    if (btn.dataset.busy) return
+    btn.dataset.busy = '1'
+    btn.disabled = true
+    try { return await fn() } finally { delete btn.dataset.busy; btn.disabled = false }
   }
 
   const tz = () => S.settings?.timezone || 'Asia/Shanghai'
@@ -54,19 +61,34 @@
     const p = Object.fromEntries(f.formatToParts(new Date(ts)).map((x) => [x.type, x.value]))
     return { y: +p.year, mo: +p.month, d: +p.day, h: +p.hour % 24, mi: p.minute }
   }
-  function fmtTag(ts) {
+  const sameDay = (a, b) => a.y === b.y && a.mo === b.mo && a.d === b.d
+  function fmtTime(ts) {
     const p = parts(ts)
-    const n = parts(Date.now())
-    const y = parts(Date.now() - 864e5)
+    const now = parts(Date.now())
     const clock = `${String(p.h).padStart(2, '0')}:${p.mi}`
-    if (p.y === n.y && p.mo === n.mo && p.d === n.d) return `今天 ${clock}`
-    if (p.y === y.y && p.mo === y.mo && p.d === y.d) return `昨天 ${clock}`
-    return `${p.y !== n.y ? `${p.y}年` : ''}${p.mo}月${p.d}日 ${clock}`
+    if (sameDay(p, now)) return clock
+    if (sameDay(p, parts(Date.now() - 864e5))) return `昨天 ${clock}`
+    return `${p.y !== now.y ? `${p.y}年` : ''}${p.mo}月${p.d}日 ${clock}`
   }
-  const fmtShort = (ts) => {
-    const t = fmtTag(ts)
-    return t.startsWith('今天') ? t.slice(3) : t.split(' ')[0]
+  function fmtShort(ts) {
+    const p = parts(ts)
+    const now = parts(Date.now())
+    if (sameDay(p, now)) return `${String(p.h).padStart(2, '0')}:${p.mi}`
+    if (sameDay(p, parts(Date.now() - 864e5))) return '昨天'
+    return `${p.mo}/${p.d}`
   }
+
+  // ---------------- iPad 键盘：页面高度跟着可见区域走 ----------------
+  const vv = window.visualViewport
+  function fitViewport() {
+    const h = vv ? vv.height : window.innerHeight
+    document.documentElement.style.setProperty('--app-h', `${Math.round(h)}px`)
+    if (vv && (vv.offsetTop > 0 || window.scrollY > 0)) window.scrollTo(0, 0)
+  }
+  vv?.addEventListener('resize', fitViewport)
+  vv?.addEventListener('scroll', fitViewport)
+  window.addEventListener('resize', fitViewport)
+  fitViewport()
 
   // ---------------- 文字渲染 ----------------
   function inline(text) {
@@ -77,7 +99,6 @@
     s = s.replace(/(^|[\s(（])(https?:\/\/[^\s<)）]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
     return s.replace(/\n/g, '<br>')
   }
-  // 一条消息按空行拆成多个气泡，代码块单独一个
   function bubbles(text) {
     const out = []
     const re = /```(\w*)[^\n]*\n?([\s\S]*?)(```|$)/g
@@ -86,190 +107,404 @@
     const pushText = (t) => {
       for (const para of t.split(/\n\s*\n/)) if (para.trim()) out.push({ html: inline(para.trim()) })
     }
-    while ((m = re.exec(text))) {
+    while ((m = re.exec(String(text || '')))) {
       pushText(text.slice(last, m.index))
       out.push({ code: true, html: `${m[1] ? `<span class="lang">${esc(m[1])}</span>` : ''}<pre><code>${esc(m[2].replace(/\n$/, ''))}</code></pre>` })
       last = re.lastIndex
       if (!m[3]) break
     }
-    pushText(text.slice(last))
+    pushText(String(text || '').slice(last))
     return out
+  }
+  const bubblesHtml = (text, cursor) => {
+    const bs = bubbles(text)
+    return bs.map((b, i) => `<div class="bubble${b.code ? ' codeblock' : ''}${cursor && i === bs.length - 1 && !b.code ? ' cursor' : ''}">${b.html}</div>`).join('')
   }
 
   // ---------------- 图标 ----------------
   const P = {
     bash: 'M4 5h16v14H4zM8 10l3 2-3 2M13 15h4',
-    read: 'M6 3h9l4 4v14H6zM14 3v5h5M9 13h7M9 17h5',
-    write: 'M6 3h9l4 4v14H6zM9 17l1-3 5-5 2 2-5 5z',
-    edit: 'M4 20l4-1 11-11-3-3L5 16zM14 7l3 3',
+    file: 'M6 3h9l4 4v14H6zM14 3v5h5',
+    edit: 'M4 20l4-1 11-11-3-3L5 16z',
     find: 'M10.5 17a6.5 6.5 0 1 1 0-13 6.5 6.5 0 0 1 0 13zM15.5 15.5L20 20',
     pulse: 'M3 12h4l2-5 4 10 2-5h6',
     globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18',
-    click: 'M6 3l12 7-5 1.5L10.5 17zM13 12l5 6',
-    keys: 'M3 7h18v10H3zM7 11h.01M11 11h.01M15 11h.01M8 14h8',
-    note: 'M5 3h11a3 3 0 0 1 3 3v15H8a3 3 0 0 1-3-3zM9 8h6M9 12h6',
+    note: 'M6 4h10a2 2 0 0 1 2 2v14H8a2 2 0 0 1-2-2zM10 8h4',
     clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2',
-    smile: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM8.5 14c2 2.2 5 2.2 7 0M9 9.5h.01M15 9.5h.01',
-    x: 'M6 6l12 12M18 6L6 18',
     mail: 'M3 6h18v12H3zM3 6l9 7 9-7',
+    x: 'M6 6l12 12M18 6L6 18',
     trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13',
     pen: 'M4 20l4-1 11-11-3-3L5 16z',
   }
   const svg = (d) => `<svg viewBox="0 0 24 24"><path d="${d}"/></svg>`
   const TOOL_ICON = {
-    bash: 'bash', read: 'read', write: 'write', edit: 'edit', glob: 'find', grep: 'find', sysinfo: 'pulse',
-    webfetch: 'globe', browser_open: 'globe', browser_look: 'globe', browser_scroll: 'globe', browser_back: 'globe', browser_close: 'globe',
-    browser_click: 'click', browser_type: 'keys',
-    remember: 'note', forget: 'note', schedule_message: 'clock', list_schedules: 'clock', cancel_schedule: 'clock', set_mood: 'smile',
+    bash: 'bash', read: 'file', write: 'file', edit: 'edit', glob: 'find', grep: 'find', sysinfo: 'pulse', webfetch: 'globe',
   }
-  const LIFE = new Set(['remember', 'forget', 'schedule_message', 'list_schedules', 'cancel_schedule', 'set_mood'])
+  const NOTE_TOOLS = new Set(['remember', 'forget', 'schedule_message', 'list_schedules', 'cancel_schedule', 'set_mood'])
 
-  // ---------------- 房间 ----------------
-  const LEVELS = [[85, '离不开你'], [60, '特别的人'], [35, '好朋友'], [15, '熟起来了'], [0, '刚认识']]
-  const IDLE_SAY = {
-    happy: ['在晃腿', '哼着小曲', '在数内存条'], shy: ['脸红红的', '偷偷看你'], sleepy: ['打了个哈欠', '眼皮在打架'],
-    pouty: ['鼓着脸', '哼'], excited: ['蹦蹦跳跳', '超有精神'], worried: ['有点担心', '皱着眉'],
-    focused: ['在认真', '盯着屏幕'], sad: ['蔫蔫的', '抱着膝盖'],
-  }
-  const PET_SAY = ['干嘛啦～', '嘿嘿', '叶子要被你摸掉啦', '再摸要收费了哦', '(＞ω＜)', '痒痒的', '哼，才没有很开心', '再来一下也可以']
-
-  function timeOfDay() {
-    const h = parts(Date.now()).h
-    if (h >= 5 && h < 8) return 'dawn'
-    if (h >= 8 && h < 17) return 'day'
-    if (h >= 17 && h < 19) return 'dusk'
-    return 'night'
-  }
-
-  let sayLock = 0
-  function updateRoom() {
-    const st = S.state || {}
-    const mood = st.mood || 'happy'
-    let act = 'idle'
-    const running = S.conv && S.running.has(S.conv.id)
-    const drafting = [...S.drafts.values()].some((d) => d.content)
-    if (S.running.size) act = S.runningTools.size ? 'working' : drafting ? 'talking' : 'thinking'
-    else if (st.asleep) act = 'sleeping'
-    Mascot.render(ui.mascot, { mood, act })
-    $('#window').dataset.time = timeOfDay()
-    $('#moodChip').textContent = S.features.moods?.[mood] || '开心'
-    if (Date.now() > sayLock) {
-      const say = act === 'working' ? `在${S.toolLabel || '干活'}` : act === 'talking' ? '在打字' : act === 'thinking' ? '在想怎么回你' : act === 'sleeping' ? '睡着了' : null
-      if (say) ui.say.textContent = say
-      else if (!ui.say.dataset.idle || ui.say.dataset.mood !== mood) {
-        const pool = IDLE_SAY[mood] || IDLE_SAY.happy
-        ui.say.textContent = pool[Math.floor(Math.random() * pool.length)]
-        ui.say.dataset.mood = mood
+  // ---------------- 增量渲染：每块有固定 key，没变的不动 ----------------
+  const tpl = document.createElement('template')
+  function patch(container, blocks, animate) {
+    const old = new Map()
+    for (const el of container.children) old.set(el.dataset.key, el)
+    let prev = null
+    for (const b of blocks) {
+      let el = old.get(b.key)
+      if (el && el._html !== b.html) {
+        const n = make(b)
+        const was = $$('details', el).map((d) => d.open)
+        $$('details', n).forEach((d, i) => { if (was[i] !== undefined) d.open = was[i] })
+        el.replaceWith(n)
+        el = n
+      } else if (!el) {
+        el = make(b)
+        if (animate) el.classList.add('enter')
       }
-      ui.say.dataset.idle = say ? '' : '1'
+      old.delete(b.key)
+      const want = prev ? prev.nextElementSibling : container.firstElementChild
+      if (el !== want) container.insertBefore(el, want)
+      prev = el
     }
-    const aff = Math.max(0, Math.min(100, st.affection ?? 0))
-    $('#meterNum').textContent = aff
-    $('#meterLevel').textContent = LEVELS.find(([n]) => aff >= n)[1]
-    $('#meterFill').style.width = `${Math.max(4, aff)}%`
-    $('#mmFill').style.width = `${Math.max(4, aff)}%`
-    void running
-    renderMemo()
+    for (const el of old.values()) el.remove()
+  }
+  function make(b) {
+    tpl.innerHTML = b.html.trim()
+    const el = tpl.content.firstElementChild
+    el.dataset.key = b.key
+    el._html = b.html
+    return el
   }
 
-  function renderMemo() {
-    const el = $('#memo')
-    if (!el) return
-    const p = parts(Date.now())
-    const name = esc(S.settings?.charName || '柚柚')
-    const lines = [`<b>现在 ${String(p.h).padStart(2, '0')}:${p.mi}</b>，${name}${S.state?.asleep ? '睡着了，别吵她' : '醒着'}`]
-    const next = (S.schedules || []).slice().sort((a, b) => a.at - b.at)[0]
-    if (next) lines.push(`约好了 <b>${esc(fmtTag(next.at))}</b> 来找你`)
-    const mem = (S.memory || []).at(-1)
-    if (mem) lines.push(`小本本上写着：${esc(mem.text.length > 34 ? mem.text.slice(0, 34) + '等等' : mem.text)}`)
-    else lines.push('小本本上还什么都没写')
-    el.innerHTML = lines.map((l) => `<p>${l}</p>`).join('')
+  // ---------------- 滚动：只有你在底部时才自动跟随 ----------------
+  let stick = true
+  let touching = false
+  let userScrollAt = 0
+  const distBottom = () => ui.scroller.scrollHeight - ui.scroller.scrollTop - ui.scroller.clientHeight
+  ui.scroller.addEventListener('touchstart', () => { touching = true; userScrollAt = Date.now() }, { passive: true })
+  ui.scroller.addEventListener('touchend', () => { touching = false; userScrollAt = Date.now() }, { passive: true })
+  ui.scroller.addEventListener('wheel', () => { userScrollAt = Date.now() }, { passive: true })
+  ui.scroller.addEventListener('scroll', () => {
+    const userish = touching || Date.now() - userScrollAt < 800
+    if (userish) stick = distBottom() < 30
+    else if (distBottom() < 30) stick = true
+    if (stick) ui.jump.hidden = true
+  }, { passive: true })
+  function follow(force) {
+    if (force) stick = true
+    if (stick && !touching && Date.now() - userScrollAt > 800) {
+      ui.scroller.scrollTop = ui.scroller.scrollHeight
+      ui.jump.hidden = true
+    } else if (!stick) ui.jump.hidden = false
+  }
+  ui.jump.addEventListener('click', () => { userScrollAt = 0; follow(true) })
+
+  // ---------------- 聊天记录 ----------------
+  const parseArgs = (s) => { try { return JSON.parse(s || '{}') } catch { return {} } }
+  function toolSummary(name, a) {
+    switch (name) {
+      case 'bash': return a.command
+      case 'read': case 'write': case 'edit': return a.path
+      case 'glob': case 'grep': return `${a.pattern}${a.path ? `  ${a.path}` : ''}`
+      case 'webfetch': case 'browser_open': return a.url
+      case 'browser_click': return `[${a.ref}]`
+      case 'browser_type': return a.text
+      case 'browser_scroll': return { down: '往下', up: '往上', top: '到顶', bottom: '到底' }[a.direction] || ''
+      default: return ''
+    }
+  }
+  function toolState(call, result) {
+    if (!result) return S.runningTools.has(call.id) || (S.conv && S.running.has(S.conv.id)) ? ['run', '进行中'] : ['bad', '中断']
+    const t = result.content || ''
+    if (/^(错误|出错了)/.test(t)) return ['bad', '出错']
+    const code = /\[退出码 (\d+)\]\s*$/.exec(t)
+    if (code && code[1] !== '0') return ['bad', `退出码 ${code[1]}`]
+    if (/\[超过 \d+ 秒被停止了/.test(t)) return ['bad', '超时']
+    return ['ok', '完成']
+  }
+  const clipText = (t, n) => (t.length > n ? `${t.slice(0, n)}\n（后面还有 ${t.length - n} 字）` : t)
+
+  function noteLine(call, result) {
+    const a = parseArgs(call.arguments)
+    const n = call.name
+    if (n === 'set_mood' || n === 'list_schedules') return ''
+    let text = ''
+    if (n === 'remember') text = `记下了：${a.text || ''}`
+    else if (n === 'forget') text = '划掉了一条记忆'
+    else if (n === 'schedule_message') text = `约好了 ${a.at || `${a.in_minutes} 分钟后`}：${a.note || ''}`
+    else if (n === 'cancel_schedule') text = '取消了一个约定'
+    if (!result) text += '（进行中）'
+    return `<span class="note-line">${svg(n === 'schedule_message' || n === 'cancel_schedule' ? P.clock : P.note)}${esc(text)}</span>`
   }
 
-  function applyNames() {
-    const name = S.settings?.charName || '柚柚'
-    $('#charName').textContent = name
-    $('#plateName').textContent = name
-    document.title = `${name}的房间`
-    ui.input.placeholder = `跟${name}说点什么`
+  function actCard(call, result) {
+    if (NOTE_TOOLS.has(call.name)) return noteLine(call, result)
+    const name = call.name
+    const meta = S.features.tools?.[name] || { label: name }
+    const a = parseArgs(call.arguments)
+    const [cls, label] = toolState(call, result)
+    let body = ''
+    if (name === 'bash') body += `<span class="label">命令</span><pre>${esc(a.command || '')}</pre>`
+    else if (name === 'write') body += `<span class="label">写入 ${esc(a.path)}</span><pre>${esc(clipText(String(a.content || ''), 4000))}</pre>`
+    else if (name === 'edit') body += `<span class="label">修改 ${esc(a.path)}</span><pre>${esc(`- ${clipText(String(a.oldString || ''), 2000)}\n+ ${clipText(String(a.newString || ''), 2000)}`)}</pre>`
+    else if (Object.keys(a).length) body += `<span class="label">参数</span><pre>${esc(JSON.stringify(a, null, 2))}</pre>`
+    if (result) body += `<span class="label">结果</span><pre>${esc(clipText(result.content || '', 12000))}</pre>`
+    const shots = result?.images?.length ? `<div class="pics shots">${result.images.map((id) => `<img src="/api/files/${encodeURIComponent(id)}" alt="截图" loading="lazy">`).join('')}</div>` : ''
+    return `<details class="act"><summary><span class="act-ic">${svg(P[TOOL_ICON[name]] || P.globe)}</span><span class="act-label">${esc(meta.label || name)}</span><code class="act-sum">${esc(toolSummary(name, a))}</code><span class="act-state ${cls}">${label}</span></summary><div class="act-body">${body}</div></details>${shots}`
   }
 
-  ui.mascot.addEventListener('click', async () => {
-    ui.mascot.classList.remove('boing')
-    void ui.mascot.offsetWidth
-    ui.mascot.classList.add('boing')
-    setTimeout(() => ui.mascot.classList.remove('boing'), 650)
-    ui.say.textContent = PET_SAY[Math.floor(Math.random() * PET_SAY.length)]
-    sayLock = Date.now() + 2500
-    try {
-      const r = await api('/api/pet', { method: 'POST', body: {} })
-      S.state = { ...S.state, ...r.state }
-      updateRoom()
-    } catch {}
+  const TRIGGER = { idle: '主动来找你', wake: '刚醒来找你', reminder: '按约好的时间来找你' }
+
+  function buildBlocks() {
+    const c = S.conv
+    const blocks = []
+    if (!c) return blocks
+    const results = new Map(c.messages.filter((m) => m.role === 'tool').map((m) => [m.tool_call_id, m]))
+    const archived = c.messages.filter((m) => m.archived && !m.hidden && (m.role === 'user' || (m.role === 'assistant' && m.content))).length
+    if (archived && !S.showOlder) {
+      blocks.push({ key: 'older', html: `<div class="blk sep">更早的 ${archived} 条已整理成日记 <button type="button" data-act="older">展开</button><button type="button" data-act="diary">看日记</button></div>` })
+    }
+    let lastTs = 0
+    let lastSide = ''
+    let trigger = null
+    for (const m of c.messages) {
+      if (m.archived && !S.showOlder) continue
+      if (m.role === 'tool') continue
+      if (m.role === 'user' && m.hidden) { trigger = m.trigger || 'idle'; continue }
+      if (m.role === 'event') {
+        let inner = esc(m.content)
+        if (m.kind === 'compact') inner += ' <button type="button" data-act="diary">看日记</button>'
+        blocks.push({ key: m.id, html: `<div class="blk sep${m.kind === 'error' ? ' error' : ''}">${inner}</div>` })
+        lastSide = ''
+        continue
+      }
+      if (m.ts - lastTs > 10 * 60 * 1000) {
+        blocks.push({ key: `t-${m.id}`, html: `<div class="blk time-sep">${fmtTime(m.ts)}</div>` })
+        lastSide = ''
+      }
+      lastTs = m.ts
+      if (m.role === 'user') {
+        trigger = null
+        const pics = m.images?.length ? `<div class="pics">${m.images.map((id) => `<img src="/api/files/${encodeURIComponent(id)}" alt="图片" loading="lazy">`).join('')}</div>` : ''
+        blocks.push({ key: m.id, html: `<div class="blk${lastSide === 'me' ? ' cont' : ''}"><div class="row me">${pics}${bubblesHtml(m.content)}</div></div>` })
+        lastSide = 'me'
+      } else if (m.role === 'assistant') {
+        let inner = ''
+        if (trigger) {
+          inner += `<span class="note-line accent">${svg(P.mail)}${TRIGGER[trigger] || TRIGGER.idle}</span>`
+          trigger = null
+        }
+        if (m.reasoning_content) inner += `<details class="thought"><summary>心里话</summary><div class="thought-body">${esc(m.reasoning_content)}</div></details>`
+        inner += bubblesHtml(m.content)
+        for (const call of m.tool_calls || []) inner += actCard(call, results.get(call.id))
+        if (!inner) continue
+        blocks.push({ key: m.id, html: `<div class="blk${lastSide === 'her' ? ' cont' : ''}"><div class="row her">${inner}</div></div>` })
+        lastSide = 'her'
+      }
+    }
+    if (!c.messages.some((m) => !m.hidden && m.role !== 'event')) blocks.push({ key: 'empty', html: '<div class="blk empty-hint">还没有聊天，说点什么吧</div>' })
+    if (!S.features.apiKey) blocks.push({ key: 'nokey', html: '<div class="blk banner"><span>还没有填 DeepSeek 密钥，暂时没法回复</span><button class="btn" type="button" data-act="key">去填写</button></div>' })
+    return blocks
+  }
+
+  let histQueued = false
+  let histAnimate = false
+  function renderHistory(animate = true) {
+    histAnimate = histAnimate || animate
+    if (histQueued) return
+    histQueued = true
+    requestAnimationFrame(() => {
+      histQueued = false
+      patch(ui.history, buildBlocks(), histAnimate)
+      histAnimate = false
+      follow()
+    })
+  }
+
+  let liveQueued = false
+  function renderLive() {
+    if (liveQueued) return
+    liveQueued = true
+    requestAnimationFrame(() => {
+      liveQueued = false
+      const c = S.conv
+      const blocks = []
+      if (c && S.running.has(c.id)) {
+        const drafts = [...S.drafts.entries()].filter(([, d]) => d.convId === c.id)
+        for (const [id, d] of drafts) {
+          let inner = ''
+          if (d.reasoning && !d.content) inner += `<div class="thinking">${esc(d.reasoning.slice(-600))}</div>`
+          inner += d.content ? bubblesHtml(d.content, true) : (d.reasoning ? '' : '<div class="bubble"><span class="typing"><i></i><i></i><i></i></span></div>')
+          blocks.push({ key: `d-${id}`, html: `<div class="blk"><div class="row her">${inner}</div></div>` })
+        }
+        if (!drafts.length && !S.runningTools.size) blocks.push({ key: 'typing', html: '<div class="blk"><div class="row her"><div class="bubble"><span class="typing"><i></i><i></i><i></i></span></div></div></div>' })
+      }
+      if (S.compacting) blocks.push({ key: 'compacting', html: '<div class="blk sep">正在整理前面的聊天</div>' })
+      patch(ui.live, blocks, false)
+      $$('.thinking', ui.live).forEach((el) => { el.scrollTop = el.scrollHeight })
+      follow()
+      updateStatus()
+    })
+  }
+
+  function updateStatus() {
+    const c = S.conv
+    let text = '在线'
+    let busy = false
+    if (c && S.running.has(c.id)) {
+      busy = true
+      if (S.runningTools.size) text = `正在${[...S.runningTools.values()].pop() || '操作'}`
+      else if ([...S.drafts.values()].some((d) => d.convId === c.id && d.content)) text = '正在输入'
+      else text = '正在想'
+    } else if (S.state?.asleep) text = '睡着了'
+    if (ui.status.textContent !== text) ui.status.textContent = text
+    ui.status.classList.toggle('busy', busy)
+    const running = c && S.running.has(c.id)
+    ui.send.classList.toggle('stop', !!running)
+    ui.send.textContent = running ? '停止' : '发送'
+  }
+
+  ui.history.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-act]')
+    if (!b) return
+    if (b.dataset.act === 'older') { S.showOlder = true; renderHistory(false) }
+    if (b.dataset.act === 'diary') openSheet('memory', 'diary')
+    if (b.dataset.act === 'key') openSheet('settings', 'account')
+  })
+  document.addEventListener('click', (e) => {
+    const img = e.target.closest('.pics img')
+    if (!img) return
+    const v = document.createElement('div')
+    v.className = 'viewer'
+    v.innerHTML = `<img src="${img.src}" alt="">`
+    v.addEventListener('click', () => v.remove())
+    document.body.append(v)
   })
 
-  // ---------------- 收音机 ----------------
-  const radio = window.Radio
-  radio.onchange = () => {
-    $('#radio').classList.toggle('playing', radio.playing)
-    const t = radio.title()
-    $('#radioTitle').textContent = t.title
-    $('#radioSub').textContent = t.sub
+  // ---------------- 侧栏 ----------------
+  function renderConvList() {
+    const list = $('#convList')
+    list.innerHTML = S.convs.map((c) => `
+      <div class="conv${c.id === S.conv?.id ? ' current' : ''}" data-id="${esc(c.id)}" role="button" tabindex="0">
+        <div class="conv-main">
+          <div class="conv-top"><span class="conv-title">${esc(c.title)}</span><span class="conv-time">${fmtShort(c.updatedAt)}</span></div>
+          <span class="conv-preview">${esc((c.preview || '空白的一页').replace(/[`*#]/g, '').replace(/\s+/g, ' '))}</span>
+        </div>
+        <div class="conv-actions">
+          <button class="icon-btn" type="button" data-rename="${esc(c.id)}" aria-label="改名">${svg(P.pen)}</button>
+          <button class="icon-btn" type="button" data-del="${esc(c.id)}" aria-label="删除">${svg(P.trash)}</button>
+        </div>
+        ${c.unread && c.id !== S.conv?.id ? `<span class="conv-unread">${c.unread}</span>` : ''}
+      </div>`).join('')
+    const others = S.convs.some((c) => c.id !== S.conv?.id && c.unread)
+    $('#menuDot').hidden = !others
   }
-  $('#radioPlay').addEventListener('click', () => {
+
+  $('#convList').addEventListener('click', async (e) => {
+    const ren = e.target.closest('[data-rename]')
+    const del = e.target.closest('[data-del]')
+    const row = e.target.closest('[data-id]')
+    if (ren) {
+      e.stopPropagation()
+      const c = S.convs.find((x) => x.id === ren.dataset.rename)
+      const title = prompt('改个名字', c?.title || '')
+      if (!title?.trim()) return
+      await api(`/api/conversations/${c.id}`, { method: 'PATCH', body: { title: title.trim() } })
+      c.title = title.trim()
+      if (S.conv?.id === c.id) { S.conv.title = c.title; $('#convTitle').textContent = c.title }
+      renderConvList()
+    } else if (del) {
+      e.stopPropagation()
+      if (!confirm('删除这一页？聊天记录会被删掉，找不回来。')) return
+      try {
+        await api(`/api/conversations/${del.dataset.del}`, { method: 'DELETE' })
+        const st = await api('/api/state')
+        S.convs = st.conversations
+        if (!S.convs.some((c) => c.id === S.conv?.id)) await loadConv(st.mainId)
+        renderConvList()
+      } catch (err) { toast(err.message, 'bad') }
+    } else if (row && row.dataset.id !== S.conv?.id) {
+      await loadConv(row.dataset.id)
+      closeDrawer()
+    } else if (row) closeDrawer()
+  })
+
+  const closeDrawer = () => ui.app.classList.remove('drawer')
+  $('#menuBtn').addEventListener('click', () => ui.app.classList.toggle('drawer'))
+  $('#scrim').addEventListener('click', closeDrawer)
+
+  $('#newPageBtn').addEventListener('click', (e) => once(e.currentTarget, async () => {
+    try {
+      const c = await api('/api/conversations', { method: 'POST', body: {} })
+      S.convs.unshift({ id: c.id, title: c.title, createdAt: c.createdAt, updatedAt: c.updatedAt, unread: 0, preview: '' })
+      await loadConv(c.id)
+      closeDrawer()
+      ui.input.focus()
+    } catch (err) { toast(err.message, 'bad') }
+  }))
+
+  $('#compactBtn').addEventListener('click', (e) => once(e.currentTarget, compactNow))
+  async function compactNow() {
+    if (!S.conv) return
+    if (!confirm('把前面的聊天整理成一页日记？最近的几句会原样保留。')) return
+    S.compacting = true
+    renderLive()
+    try {
+      const r = await api(`/api/conversations/${S.conv.id}/compact`, { method: 'POST', body: {} })
+      if (!r.ok) toast(r.reason)
+    } catch (err) { toast(err.message, 'bad') }
+    S.compacting = false
+    renderLive()
+  }
+
+  // ---------------- 音乐 ----------------
+  const radio = window.Radio
+  const musicBtn = $('#musicBtn')
+  radio.onchange = () => {
+    musicBtn.setAttribute('aria-pressed', String(radio.playing))
+    $('span', musicBtn).textContent = radio.playing ? '暂停' : '音乐'
+  }
+  musicBtn.addEventListener('click', () => {
     radio.toggle()
     store.set('yz-music', radio.playing ? 'on' : 'off')
   })
-  $('#radioNext').addEventListener('click', () => radio.next())
   async function loadMusic() {
-    try {
-      radio.setTracks(await api('/api/music'))
-      radio.onchange()
-    } catch {}
+    try { radio.setTracks(await api('/api/music')) } catch {}
+  }
+  // 浏览器要求先有一次点击才能出声，所以在第一次点按时开始放
+  const startMusicOnce = () => {
+    document.removeEventListener('pointerdown', startMusicOnce, true)
+    if (store.get('yz-music') !== 'off' && !radio.playing) radio.play()
   }
 
-  // ---------------- 门口 ----------------
-  const door = $('#door')
-  function showDoor(needLogin) {
-    S.needLogin = needLogin
-    door.classList.remove('gone', 'open', 'knocking')
-    $('#app').hidden = true
-    $('#doorPass').hidden = !needLogin
-    $('#doorLabel').textContent = needLogin ? '对个暗号' : `${S.settings?.charName || '柚柚'}在里面等你`
-    $('#knockBtn').textContent = needLogin ? '咚咚，敲门' : '咚咚，进去啦'
-    const unread = S.convs.reduce((n, c) => n + (c.unread || 0), 0)
-    const note = $('#doorNote')
-    note.hidden = needLogin || !unread
-    note.textContent = unread ? `门缝里塞着 ${unread} 张小纸条` : ''
-    if (needLogin) setTimeout(() => $('#doorPass').focus(), 50)
+  // ---------------- 登录 ----------------
+  function showLogin() {
+    ui.app.hidden = true
+    $('#login').hidden = false
+    es?.close()
+    S.loaded = false
+    setTimeout(() => $('#loginPass').focus(), 50)
   }
-
-  $('#doorForm').addEventListener('submit', async (e) => {
+  $('#loginForm').addEventListener('submit', async (e) => {
     e.preventDefault()
-    radio.knock() // 同时解锁浏览器的声音
-    door.classList.remove('knocking')
-    void door.offsetWidth
-    door.classList.add('knocking')
-    $('#doorErr').textContent = ''
-    try {
-      if (S.needLogin) {
-        await api('/api/login', { method: 'POST', body: { password: $('#doorPass').value } })
-        $('#doorPass').value = ''
-      }
-      if (!S.loaded) await loadAll()
-    } catch (err) {
-      $('#doorErr').textContent = err.message
-      return
-    }
-    await sleep(500)
-    door.classList.add('open')
-    await sleep(900)
-    door.classList.add('gone')
-    $('#app').hidden = false
-    scrollBottom(true)
-    if (store.get('yz-music') !== 'off') radio.play()
-    if (!coarse) ui.input.focus()
+    const btn = $('button', e.currentTarget)
+    await once(btn, async () => {
+      $('#loginErr').textContent = ''
+      try {
+        await api('/api/login', { method: 'POST', body: { password: $('#loginPass').value } })
+        $('#loginPass').value = ''
+        await enter()
+      } catch (err) { $('#loginErr').textContent = err.message }
+    })
   })
+
+  async function enter() {
+    await loadAll()
+    $('#login').hidden = true
+    ui.app.hidden = false
+    fitViewport()
+    follow(true)
+    document.addEventListener('pointerdown', startMusicOnce, true)
+  }
 
   // ---------------- 数据 ----------------
   async function loadAll() {
@@ -278,17 +513,13 @@
     S.state = st.state
     S.features = st.features
     S.convs = st.conversations
-    S.mainId = st.mainId
     S.running = new Set(st.running)
     S.memory = st.memory
     S.schedules = st.schedules
     S.loaded = true
-    applyNames()
     await loadConv(st.mainId)
     loadMusic()
     connectEvents()
-    updateRoom()
-    updateBadges()
   }
 
   async function refreshState() {
@@ -299,8 +530,8 @@
       S.running = new Set(st.running)
       S.memory = st.memory
       S.schedules = st.schedules
-      updateRoom()
-      updateBadges()
+      renderConvList()
+      updateStatus()
     } catch {}
   }
 
@@ -310,270 +541,14 @@
     S.showOlder = false
     S.drafts.clear()
     $('#convTitle').textContent = c.title
-    updateSub()
-    renderHistory()
+    ui.history.replaceChildren()
+    ui.live.replaceChildren()
+    patch(ui.history, buildBlocks(), false)
     renderLive()
-    scrollBottom(true)
+    renderConvList()
+    follow(true)
+    document.fonts?.ready.then(() => follow())
     markRead()
-  }
-
-  function updateSub() {
-    const c = S.conv
-    if (!c) return
-    const n = c.messages.filter((m) => !m.hidden && (m.role === 'user' || (m.role === 'assistant' && m.content))).length
-    $('#convSub').textContent = `${fmtShort(c.createdAt)} 翻开的，聊了 ${n} 句${c.summary ? '，有一页日记' : ''}`
-  }
-
-  async function markRead() {
-    const c = S.conv
-    if (!c || document.hidden) return
-    const item = S.convs.find((x) => x.id === c.id)
-    if ((c.unread || item?.unread) && !$('#app').hidden) {
-      c.unread = 0
-      if (item) item.unread = 0
-      updateBadges()
-      api(`/api/conversations/${c.id}/read`, { method: 'POST', body: {} }).catch(() => {})
-    }
-  }
-
-  function updateBadges() {
-    const others = S.convs.filter((c) => c.id !== S.conv?.id).reduce((n, c) => n + (c.unread || 0), 0)
-    const b = $('#diaryBadge')
-    b.hidden = !others
-    b.textContent = others
-  }
-
-  // ---------------- 渲染聊天 ----------------
-  const nearBottom = () => ui.scroller.scrollHeight - ui.scroller.scrollTop - ui.scroller.clientHeight < 160
-  function scrollBottom(force) {
-    if (force || nearBottom()) {
-      requestAnimationFrame(() => { ui.scroller.scrollTop = ui.scroller.scrollHeight })
-      ui.jump.hidden = true
-    } else ui.jump.hidden = false
-  }
-  ui.scroller.addEventListener('scroll', () => { if (nearBottom()) ui.jump.hidden = true })
-  ui.jump.addEventListener('click', () => scrollBottom(true))
-
-  const parseArgs = (s) => { try { return JSON.parse(s || '{}') } catch { return {} } }
-  function toolSummary(name, a) {
-    switch (name) {
-      case 'bash': return a.description ? `${a.description}：${a.command}` : a.command
-      case 'read': case 'write': case 'edit': return a.path
-      case 'glob': case 'grep': return `${a.pattern}${a.path ? `  在 ${a.path}` : ''}`
-      case 'webfetch': case 'browser_open': return a.url
-      case 'browser_click': return `元素 [${a.ref}]`
-      case 'browser_type': return `「${a.text}」`
-      case 'browser_scroll': return { down: '往下', up: '往上', top: '到顶', bottom: '到底' }[a.direction] || ''
-      case 'remember': return a.text
-      case 'forget': case 'cancel_schedule': return a.id
-      case 'schedule_message': return `${a.at || `${a.in_minutes} 分钟后`}  ${a.note}${a.repeat === 'daily' ? '（每天）' : ''}`
-      case 'set_mood': return S.features.moods?.[a.mood] || a.mood
-      default: return ''
-    }
-  }
-  function toolState(call, result) {
-    if (!result) {
-      if (S.runningTools.has(call.id) || (S.conv && S.running.has(S.conv.id))) return ['run', '在做']
-      return ['bad', '没做完']
-    }
-    const t = result.content || ''
-    if (/^(错误|出错了)/.test(t)) return ['bad', '出错了']
-    const code = /\[退出码 (\d+)\]\s*$/.exec(t)
-    if (code && code[1] !== '0') return ['bad', `退出码 ${code[1]}`]
-    if (/\[超过 \d+ 秒被停止了/.test(t)) return ['bad', '超时了']
-    return ['ok', '好了']
-  }
-  const clipText = (t, n) => (t.length > n ? `${t.slice(0, n)}\n（后面还有 ${t.length - n} 字）` : t)
-
-  function actCard(call, result) {
-    const name = call.name
-    const meta = S.features.tools?.[name] || { label: name }
-    const a = parseArgs(call.arguments)
-    const [cls, label] = toolState(call, result)
-    const kind = LIFE.has(name) ? 'life' : /^(webfetch|browser_)/.test(name) ? 'web' : ''
-    let body = ''
-    if (name === 'bash') body += `<span class="label">命令</span><pre>${esc(a.command || '')}</pre>`
-    else if (name === 'write') body += `<span class="label">写进 ${esc(a.path)}</span><pre>${esc(clipText(String(a.content || ''), 4000))}</pre>`
-    else if (name === 'edit') body += `<span class="label">改 ${esc(a.path)}</span><pre>${esc(`- ${clipText(String(a.oldString || ''), 2000)}\n+ ${clipText(String(a.newString || ''), 2000)}`)}</pre>`
-    else if (!LIFE.has(name) && Object.keys(a).length) body += `<span class="label">参数</span><pre>${esc(JSON.stringify(a, null, 2))}</pre>`
-    if (result) body += `<span class="label">结果</span><pre>${esc(clipText(result.content || '', 12000))}</pre>`
-    const shots = result?.images?.length ? `<div class="imgs act-shots">${result.images.map((id) => `<img class="shot-thumb" src="/api/files/${encodeURIComponent(id)}" alt="她看到的画面" loading="lazy">`).join('')}</div>` : ''
-    return `<details class="act ${kind}">
-      <summary><span class="act-icon">${svg(P[TOOL_ICON[name]] || P.bash)}</span>
-      <span class="act-text"><b>${esc(meta.label || name)}</b><code>${esc(toolSummary(name, a))}</code></span>
-      <span class="act-state ${cls}">${label}</span></summary>
-      <div class="act-body">${body}</div></details>${shots}`
-  }
-
-  const TRIGGER_TAG = { idle: '跑来找你了', wake: '刚睡醒就来找你', reminder: '按约好的时间来了' }
-
-  function renderHistory() {
-    const c = S.conv
-    if (!c) return
-    const results = new Map(c.messages.filter((m) => m.role === 'tool').map((m) => [m.tool_call_id, m]))
-    const archived = c.messages.filter((m) => m.archived && !m.hidden && (m.role === 'user' || (m.role === 'assistant' && m.content))).length
-    const list = c.messages.filter((m) => S.showOlder || !m.archived)
-    const head = Mascot.head()
-    const name = esc(S.settings?.charName || '柚柚')
-    let html = ''
-    if (archived && !S.showOlder) {
-      html += `<div class="strip info older">更早的 ${archived} 条已经收进日记了
-        <button class="btn" data-act="older" type="button">翻出来看</button>
-        <button class="btn" data-act="diary" type="button">读日记</button></div>`
-    }
-    let group = null
-    let lastTs = 0
-    let trigger = null
-    const flush = () => {
-      if (!group) return
-      if (group.side === 'me') {
-        html += `<div class="row me"><div class="stack">${group.items.map((m) => {
-          let h = ''
-          if (m.images?.length) h += `<div class="imgs">${m.images.map((id) => `<img src="/api/files/${encodeURIComponent(id)}" alt="图片">`).join('')}</div>`
-          h += bubbles(m.content || '').map((b) => `<div class="bubble${b.code ? ' codeblock' : ''}">${b.html}</div>`).join('')
-          return h
-        }).join('')}</div></div>`
-      } else {
-        let first = true
-        let inner = group.trigger ? `<span class="proactive-tag">${svg(P.mail)}${name}${TRIGGER_TAG[group.trigger] || '来找你了'}</span>` : ''
-        for (const m of group.items) {
-          if (m.reasoning_content) inner += `<details class="thought"><summary>偷看${name}的心里话</summary><div class="thought-body">${esc(m.reasoning_content)}</div></details>`
-          for (const b of bubbles(m.content || '')) {
-            inner += `<div class="bubble${b.code ? ' codeblock' : ''}${first && !b.code ? ' taped' : ''}">${b.html}</div>`
-            first = false
-          }
-          for (const call of m.tool_calls || []) inner += actCard(call, results.get(call.id))
-        }
-        if (inner) html += `<div class="row her"><div class="avatar">${head}</div><div class="stack">${inner}</div></div>`
-      }
-      group = null
-    }
-    for (const m of list) {
-      if (m.role === 'tool') continue
-      if (m.role === 'user' && m.hidden) { trigger = m.trigger || 'idle'; continue }
-      if (m.role === 'event') {
-        flush()
-        if (m.kind === 'compact') html += `<div class="strip">${esc(m.content)} <button class="btn" data-act="diary" type="button">读日记</button></div>`
-        else if (m.kind === 'error') html += `<div class="strip error"><b>出了点状况</b> ${esc(m.content)}</div>`
-        else html += `<div class="strip info">${esc(m.content)}</div>`
-        continue
-      }
-      const side = m.role === 'user' ? 'me' : 'her'
-      if (m.ts - lastTs > 10 * 60 * 1000) {
-        flush()
-        html += `<div class="time-tag">${fmtTag(m.ts)}</div>`
-      }
-      lastTs = m.ts
-      if (!group || group.side !== side || (side === 'her' && trigger)) {
-        flush()
-        group = { side, items: [], trigger: side === 'her' ? trigger : null }
-        if (side === 'her') trigger = null
-      }
-      if (side === 'me') trigger = null
-      group.items.push(m)
-    }
-    flush()
-    if (!list.some((m) => !m.hidden && m.role !== 'event')) {
-      html += `<div class="strip info">这一页还是空白的，跟${name}打个招呼吧</div>`
-    }
-    if (!S.features.apiKey) {
-      html += `<div class="strip error"><b>还差一把钥匙</b> 填上 DeepSeek 密钥，${name}才能说话 <button class="btn" data-act="key" type="button">去填</button></div>`
-    }
-    ui.history.innerHTML = html
-  }
-
-  let liveQueued = false
-  function renderLive() {
-    if (liveQueued) return
-    liveQueued = true
-    requestAnimationFrame(() => {
-      liveQueued = false
-      const atBottom = nearBottom()
-      const c = S.conv
-      let html = ''
-      if (c && S.running.has(c.id)) {
-        const head = Mascot.head()
-        const name = esc(S.settings?.charName || '柚柚')
-        const drafts = [...S.drafts.values()].filter((d) => d.convId === c.id)
-        for (const d of drafts) {
-          let inner = ''
-          if (d.reasoning) inner += `<details class="thought"${d.content ? '' : ' open'}><summary>${name}在想事情</summary><div class="thought-body">${esc(d.reasoning.slice(-3000))}</div></details>`
-          const bs = bubbles(d.content)
-          bs.forEach((b, i) => { inner += `<div class="bubble${b.code ? ' codeblock' : ''}${i === bs.length - 1 && !b.code ? ' cursor' : ''}">${b.html}</div>` })
-          if (!d.content && !d.reasoning) inner += `<div class="bubble"><span class="typing"><i></i><i></i><i></i></span></div>`
-          html += `<div class="row her"><div class="avatar">${head}</div><div class="stack">${inner}</div></div>`
-        }
-        if (!drafts.length && !S.runningTools.size) {
-          html += `<div class="row her"><div class="avatar">${head}</div><div class="stack"><div class="bubble"><span class="typing"><i></i><i></i><i></i></span></div></div></div>`
-        }
-      }
-      if (S.compacting) html += `<div class="strip info">正在把前面的聊天折成一页日记</div>`
-      ui.live.innerHTML = html
-      // 保持思考框滚在最新处
-      $$('.live .thought-body').forEach((el) => { el.scrollTop = el.scrollHeight })
-      if (atBottom) ui.scroller.scrollTop = ui.scroller.scrollHeight
-      else if (html) ui.jump.hidden = false
-      updateComposer()
-      updateRoom()
-    })
-  }
-
-  function updateComposer() {
-    const busy = S.conv && S.running.has(S.conv.id)
-    ui.send.classList.toggle('stop', !!busy)
-    ui.send.textContent = busy ? '停一下' : '发出去'
-  }
-
-  ui.history.addEventListener('click', (e) => {
-    const b = e.target.closest('[data-act]')
-    if (b) {
-      const act = b.dataset.act
-      if (act === 'older') { S.showOlder = true; renderHistory() }
-      if (act === 'diary') openSheet('memory', 'diary')
-      if (act === 'key') openSheet('settings', 'keys')
-    }
-  })
-  document.addEventListener('click', (e) => {
-    const img = e.target.closest('.imgs img, img.shot')
-    if (!img) return
-    const v = document.createElement('div')
-    v.className = 'viewer'
-    v.innerHTML = `<img src="${img.src}" alt="">`
-    v.addEventListener('click', () => v.remove())
-    document.body.append(v)
-  })
-
-  // ---------------- 实时事件 ----------------
-  let es = null
-  let titleFlash = null
-  function flashTitle(text) {
-    if (titleFlash || !document.hidden) return
-    const base = document.title
-    let on = false
-    titleFlash = setInterval(() => { document.title = (on = !on) ? text : base }, 1000)
-    const stop = () => {
-      if (document.hidden) return
-      clearInterval(titleFlash)
-      titleFlash = null
-      document.title = base
-      document.removeEventListener('visibilitychange', stop)
-    }
-    document.addEventListener('visibilitychange', stop)
-  }
-
-  function connectEvents() {
-    if (es) es.close()
-    es = new EventSource('/api/events')
-    let opened = false
-    es.onopen = () => {
-      if (opened) { refreshState(); if (S.conv) reloadConv() }
-      opened = true
-    }
-    es.onmessage = (e) => {
-      let ev
-      try { ev = JSON.parse(e.data) } catch { return }
-      handleEvent(ev)
-    }
   }
 
   async function reloadConv() {
@@ -583,32 +558,73 @@
       if (c.id !== S.conv.id) return
       S.conv = c
       $('#convTitle').textContent = c.title
-      updateSub()
-      renderHistory()
+      renderHistory(false)
       renderLive()
-      scrollBottom()
     } catch {}
+  }
+
+  function markRead() {
+    const c = S.conv
+    if (!c || document.hidden || ui.app.hidden) return
+    const item = S.convs.find((x) => x.id === c.id)
+    if (c.unread || item?.unread) {
+      c.unread = 0
+      if (item) item.unread = 0
+      renderConvList()
+      api(`/api/conversations/${c.id}/read`, { method: 'POST', body: {} }).catch(() => {})
+    }
   }
 
   let convsTimer = null
   const refreshConvs = () => {
     clearTimeout(convsTimer)
     convsTimer = setTimeout(async () => {
-      try { S.convs = await api('/api/conversations'); updateBadges() } catch {}
-    }, 400)
+      try { S.convs = await api('/api/conversations'); renderConvList() } catch {}
+    }, 500)
   }
 
-  function addToConv(msg) {
+  // ---------------- 实时事件 ----------------
+  let es = null
+  let titleTimer = null
+  function flashTitle() {
+    if (titleTimer || !document.hidden) return
+    let on = false
+    titleTimer = setInterval(() => { document.title = (on = !on) ? '(新消息) 小屋' : '小屋' }, 1200)
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return
+    clearInterval(titleTimer)
+    titleTimer = null
+    document.title = '小屋'
+    markRead()
+  })
+
+  function connectEvents() {
+    es?.close()
+    es = new EventSource('/api/events')
+    let opened = false
+    es.onopen = () => {
+      if (opened) { refreshState(); reloadConv() }
+      opened = true
+    }
+    es.onmessage = (e) => {
+      let ev
+      try { ev = JSON.parse(e.data) } catch { return }
+      handle(ev)
+    }
+  }
+
+  function addMsg(msg) {
     if (!S.conv || S.conv.messages.some((m) => m.id === msg.id)) return false
     S.conv.messages.push(msg)
     return true
   }
 
-  function handleEvent(ev) {
+  function handle(ev) {
     const here = S.conv && ev.convId === S.conv.id
     switch (ev.type) {
       case 'user_message':
-        if (here && addToConv(ev.message)) { renderHistory(); scrollBottom(true) }
+        if (here && addMsg(ev.message)) renderHistory()
         refreshConvs()
         break
       case 'turn_start':
@@ -619,35 +635,33 @@
         S.drafts.set(ev.id, { convId: ev.convId, content: '', reasoning: '' })
         renderLive()
         break
-      case 'reasoning': {
-        const d = S.drafts.get(ev.id)
-        if (d) { d.reasoning += ev.text; renderLive() }
-        break
-      }
+      case 'reasoning':
       case 'content': {
         const d = S.drafts.get(ev.id)
-        if (d) { d.content += ev.text; renderLive() }
+        if (!d) break
+        if (ev.type === 'content') d.content += ev.text
+        else d.reasoning += ev.text
+        renderLive()
         break
       }
       case 'assistant_done':
         S.drafts.delete(ev.message.id)
-        if (here && addToConv(ev.message)) { renderHistory(); updateSub() }
+        if (here) { addMsg(ev.message); renderHistory() }
         renderLive()
         break
       case 'tool_start':
-        S.runningTools.add(ev.callId)
-        S.toolLabel = ev.label || ''
-        if (here) renderHistory()
+        S.runningTools.set(ev.callId, ev.label || '')
+        if (here) renderHistory(false)
         renderLive()
         break
       case 'tool_done':
-        if (/^(remember|forget|schedule_message|cancel_schedule)$/.test(ev.message?.name || '')) refreshState()
         S.runningTools.delete(ev.callId)
-        if (here) { addToConv(ev.message); renderHistory() }
+        if (here) { addMsg(ev.message); renderHistory(false) }
+        if (/^(remember|forget|schedule_message|cancel_schedule)$/.test(ev.message?.name || '')) refreshState()
         renderLive()
         break
       case 'event':
-        if (here && addToConv(ev.message)) renderHistory()
+        if (here && addMsg(ev.message)) renderHistory()
         break
       case 'turn_end':
         S.running.delete(ev.convId)
@@ -657,56 +671,46 @@
         renderLive()
         refreshConvs()
         break
-      case 'proactive': {
+      case 'proactive':
         refreshConvs()
-        const name = S.settings?.charName || '柚柚'
         if (store.get('yz-ding') !== 'off') radio.ding()
-        if (here && !document.hidden && !$('#app').hidden) markRead()
-        else if (!here) toast(`${name}在另一页找你`, 'love', 6000, () => switchConv(ev.convId))
-        flashTitle(`(新消息) ${name}找你啦`)
-        if (document.hidden && 'Notification' in window && Notification.permission === 'granted' && !navigator.serviceWorker?.controller) {
-          try { new Notification(name, { body: '有新消息', icon: '/icons/icon.svg', tag: 'yuzu' }) } catch {}
-        }
+        if (here && !document.hidden) markRead()
+        else if (!here) toast('另一页有新消息', 'click', 6000, () => loadConv(ev.convId))
+        flashTitle()
         break
-      }
       case 'compacting':
         if (here) { S.compacting = true; renderLive() }
         break
       case 'compacted':
       case 'compact_failed':
-        if (here) { S.compacting = false; reloadConv(); if (ev.type === 'compacted') toast('前面的聊天折成了一页日记') }
-        break
-      case 'mood':
-        S.state.mood = ev.mood
-        updateRoom()
+        if (here) { S.compacting = false; reloadConv() }
         break
       case 'stats':
         S.state = { ...S.state, ...ev.state }
-        updateRoom()
         break
       case 'settings':
         S.settings = ev.settings
         S.features = ev.features
-        applyNames()
-        updateRoom()
+        renderHistory(false)
         break
     }
   }
-
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) { markRead(); updateRoom() }
-  })
-  setInterval(updateRoom, 60 * 1000)
   setInterval(refreshState, 5 * 60 * 1000)
 
   // ---------------- 发消息 ----------------
+  let sizeQueued = false
   function autosize() {
-    ui.input.style.height = 'auto'
-    ui.input.style.height = `${Math.min(ui.input.scrollHeight + 6, window.innerHeight * 0.4)}px`
+    if (sizeQueued) return
+    sizeQueued = true
+    requestAnimationFrame(() => {
+      sizeQueued = false
+      ui.input.style.height = 'auto'
+      ui.input.style.height = `${Math.min(ui.input.scrollHeight, window.innerHeight * 0.32)}px`
+    })
   }
   ui.input.addEventListener('input', autosize)
   ui.input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229 && !coarse) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
       e.preventDefault()
       $('#composer').requestSubmit()
     }
@@ -716,8 +720,7 @@
     const url = URL.createObjectURL(file)
     try {
       const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url })
-      const max = 1600
-      const k = Math.min(1, max / Math.max(img.width, img.height))
+      const k = Math.min(1, 1600 / Math.max(img.width, img.height))
       const c = document.createElement('canvas')
       c.width = Math.round(img.width * k)
       c.height = Math.round(img.height * k)
@@ -726,9 +729,7 @@
       g.fillRect(0, 0, c.width, c.height)
       g.drawImage(img, 0, 0, c.width, c.height)
       return c.toDataURL('image/jpeg', 0.85)
-    } finally {
-      URL.revokeObjectURL(url)
-    }
+    } finally { URL.revokeObjectURL(url) }
   }
   async function addFiles(files) {
     for (const f of files) {
@@ -739,7 +740,7 @@
     renderAttachments()
   }
   function renderAttachments() {
-    $('#attachments').innerHTML = S.attachments.map((d, i) => `<div class="att"><img src="${d}" alt=""><button type="button" data-i="${i}" aria-label="去掉">×</button></div>`).join('')
+    $('#attachments').innerHTML = S.attachments.map((d, i) => `<div class="att"><img src="${d}" alt=""><button type="button" data-i="${i}" aria-label="移除">×</button></div>`).join('')
   }
   $('#attachments').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-i]')
@@ -753,7 +754,7 @@
 
   $('#composer').addEventListener('submit', async (e) => {
     e.preventDefault()
-    if (!S.conv) return
+    if (!S.conv || S.sending) return
     if (S.running.has(S.conv.id)) {
       api('/api/chat/stop', { method: 'POST', body: { convId: S.conv.id } }).catch(() => {})
       return
@@ -761,15 +762,17 @@
     const text = ui.input.value.trim()
     const images = S.attachments.slice()
     if (!text && !images.length) return
+    S.sending = true
     ui.input.value = ''
     S.attachments = []
     renderAttachments()
     autosize()
     S.running.add(S.conv.id)
     renderLive()
+    follow(true)
     try {
       const r = await api('/api/chat', { method: 'POST', body: { convId: S.conv.id, text, images } })
-      if (addToConv(r.message)) { renderHistory(); scrollBottom(true) }
+      if (addMsg(r.message)) renderHistory()
     } catch (err) {
       S.running.delete(S.conv.id)
       renderLive()
@@ -778,139 +781,60 @@
       renderAttachments()
       autosize()
       toast(err.message, 'bad', 5000)
-    }
+    } finally { S.sending = false }
   })
-
-  // ---------------- 顶栏按钮 ----------------
-  $('#newPageBtn').addEventListener('click', newPage)
-  async function newPage() {
-    try {
-      const c = await api('/api/conversations', { method: 'POST', body: {} })
-      S.convs.unshift({ id: c.id, title: c.title, createdAt: c.createdAt, updatedAt: c.updatedAt, unread: 0, preview: '' })
-      await loadConv(c.id)
-      ui.sheet.close()
-      toast('翻开了新的一页')
-    } catch (err) { toast(err.message, 'bad') }
-  }
-  async function switchConv(id) {
-    await loadConv(id)
-    updateBadges()
-  }
-  $('#compactBtn').addEventListener('click', () => compactNow())
-  async function compactNow() {
-    if (!S.conv) return
-    if (!confirm('把前面的聊天折成一页日记？最近的几句会原样留着，她也不会忘记重要的事。')) return
-    S.compacting = true
-    renderLive()
-    try {
-      const r = await api(`/api/conversations/${S.conv.id}/compact`, { method: 'POST', body: {} })
-      if (!r.ok) toast(r.reason)
-    } catch (err) { toast(err.message, 'bad') }
-    S.compacting = false
-    renderLive()
-  }
 
   // ---------------- 弹窗 ----------------
-  $$('[data-open]').forEach((b) => b.addEventListener('click', () => openSheet(b.dataset.open)))
+  $$('[data-open]').forEach((b) => b.addEventListener('click', () => { closeDrawer(); openSheet(b.dataset.open) }))
   ui.sheet.addEventListener('click', (e) => {
-    if (e.target === ui.sheet) ui.sheet.close()
-    if (e.target.closest('[data-close]')) ui.sheet.close()
+    if (e.target === ui.sheet || e.target.closest('[data-close]')) ui.sheet.close()
   })
-
-  const closeBtn = `<button class="icon-btn" type="button" data-close aria-label="关上">${svg(P.x)}</button>`
-
+  const closeBtn = `<button class="icon-btn" type="button" data-close aria-label="关闭">${svg(P.x)}</button>`
   function openSheet(kind, tab) {
-    if (kind === 'diary') renderDiary()
     if (kind === 'memory') renderMemory(tab)
     if (kind === 'settings') renderSettings(tab)
     if (!ui.sheet.open) ui.sheet.showModal()
   }
-
-  function renderDiary() {
-    const items = S.convs.map((c) => `
-      <div class="list-item clickable${c.id === S.conv?.id ? ' current' : ''}" data-id="${c.id}">
-        <div class="grow"><b>${esc(c.title)}</b><span>${fmtShort(c.updatedAt)}　${esc(c.preview || '还是空白的')}</span></div>
-        ${c.unread ? `<em class="badge" style="position:static">${c.unread}</em>` : ''}
-        <button class="icon-btn x" type="button" data-rename="${c.id}" aria-label="改名">${svg(P.pen)}</button>
-        <button class="icon-btn x" type="button" data-del="${c.id}" aria-label="撕掉">${svg(P.trash)}</button>
-      </div>`).join('')
-    ui.sheet.innerHTML = `
-      <div class="sheet-head"><h3>日记本</h3>${closeBtn}</div>
-      <div class="sheet-body"><div class="list">${items || '<div class="empty">一页都没有</div>'}</div></div>
-      <div class="sheet-foot"><button class="btn btn-yuzu" type="button" id="sheetNew">翻开新的一页</button></div>`
-    $('#sheetNew', ui.sheet).addEventListener('click', newPage)
-    $('.list', ui.sheet).addEventListener('click', async (e) => {
-      const ren = e.target.closest('[data-rename]')
-      const del = e.target.closest('[data-del]')
-      const row = e.target.closest('[data-id]')
-      if (ren) {
-        const c = S.convs.find((x) => x.id === ren.dataset.rename)
-        const title = prompt('给这一页起个名字', c?.title || '')
-        if (title?.trim()) {
-          await api(`/api/conversations/${c.id}`, { method: 'PATCH', body: { title: title.trim() } })
-          c.title = title.trim()
-          if (S.conv?.id === c.id) { S.conv.title = c.title; $('#convTitle').textContent = c.title }
-          renderDiary()
-        }
-      } else if (del) {
-        const id = del.dataset.del
-        if (!confirm('撕掉这一页？聊天记录会被删除，找不回来。')) return
-        try {
-          await api(`/api/conversations/${id}`, { method: 'DELETE' })
-          S.convs = S.convs.filter((x) => x.id !== id)
-          if (S.conv?.id === id) {
-            const st = await api('/api/state')
-            S.convs = st.conversations
-            await loadConv(st.mainId)
-          }
-          renderDiary()
-        } catch (err) { toast(err.message, 'bad') }
-      } else if (row) {
-        await switchConv(row.dataset.id)
-        ui.sheet.close()
-      }
-    })
+  function tabsHtml(tabs, cur) {
+    return `<div class="tabs" role="tablist">${tabs.map(([k, v]) => `<button type="button" role="tab" data-tab="${k}" aria-selected="${k === cur}">${v}</button>`).join('')}</div>`
   }
 
   async function renderMemory(tab = 'notes') {
-    let st
-    try { st = await api('/api/state') } catch { return }
-    S.state = st.state
-    const memo = st.memory.slice().reverse().map((m) => `
-      <div class="list-item"><div class="grow" style="white-space:normal"><b style="white-space:normal;font-family:var(--f-body);font-size:18px;font-weight:700">${esc(m.text)}</b><span>${fmtTag(m.ts)}</span></div>
-      <button class="icon-btn x" type="button" data-mem="${m.id}" aria-label="划掉">${svg(P.x)}</button></div>`).join('')
-    const sch = st.schedules.slice().sort((a, b) => a.at - b.at).map((s) => `
-      <div class="list-item"><div class="grow"><b>${fmtTag(s.at)}${s.repeat === 'daily' ? '（每天）' : ''}</b><span style="white-space:normal">${esc(s.note)}</span></div>
-      <button class="icon-btn x" type="button" data-sch="${s.id}" aria-label="取消">${svg(P.x)}</button></div>`).join('')
+    await refreshState()
+    const memo = S.memory.slice().reverse().map((m) => `
+      <div class="item"><div class="grow"><b>${esc(m.text)}</b><span>${fmtTime(m.ts)}</span></div>
+      <button class="icon-btn" type="button" data-mem="${esc(m.id)}" aria-label="删除">${svg(P.x)}</button></div>`).join('')
+    const sch = S.schedules.slice().sort((a, b) => a.at - b.at).map((s) => `
+      <div class="item"><div class="grow"><b>${esc(s.note)}</b><span>${fmtTime(s.at)}${s.repeat === 'daily' ? '，每天' : ''}</span></div>
+      <button class="icon-btn" type="button" data-sch="${esc(s.id)}" aria-label="取消">${svg(P.x)}</button></div>`).join('')
     const sum = S.conv?.summary
-    const tabs = [['notes', '小本本'], ['plans', '约好的事'], ['diary', '这一页的日记']]
     ui.sheet.innerHTML = `
       <div class="sheet-head"><h3>回忆</h3>${closeBtn}</div>
-      <div class="sheet-tabs" role="tablist">${tabs.map(([k, v]) => `<button type="button" role="tab" data-tab="${k}" aria-selected="${k === tab}">${v}</button>`).join('')}</div>
+      ${tabsHtml([['notes', '长期记忆'], ['plans', '约好的事'], ['diary', '这一页的日记']], tab)}
       <div class="sheet-body">
-        <section data-pane="notes" ${tab === 'notes' ? '' : 'hidden'}>
-          <div class="field"><p class="hint">${esc(S.settings.charName)}自己记下的关于你的事。聊天记录被整理了也不会忘。</p>
-          <div class="inline"><input type="text" id="memNew" placeholder="帮她记一条，比如：我不吃香菜" style="flex:1;padding:10px 14px;font-size:18px;background:var(--paper);border:3px solid var(--ink);border-radius:12px"><button class="btn btn-yuzu" type="button" id="memAdd">记下</button></div></div>
-          <div class="list" style="margin-top:14px">${memo || '<div class="empty">小本本还是空的</div>'}</div>
+        <section class="pane" data-pane="notes"${tab === 'notes' ? '' : ' hidden'}>
+          <p class="hint">她记下的关于你的事。聊天记录整理之后也不会忘。</p>
+          <div class="inline"><input type="text" id="memNew" placeholder="手动添加一条"><button class="btn" type="button" id="memAdd">添加</button></div>
+          <div class="list">${memo || '<div class="empty">还没有记下什么</div>'}</div>
         </section>
-        <section data-pane="plans" ${tab === 'plans' ? '' : 'hidden'}>
-          <p class="hint" style="margin:0 0 12px;font-size:17px;font-weight:600">${esc(S.settings.charName)}答应过要来找你的时间，到点她会自己冒出来。</p>
+        <section class="pane" data-pane="plans"${tab === 'plans' ? '' : ' hidden'}>
+          <p class="hint">她答应过要来找你的时间，到点会自己来。</p>
           <div class="list">${sch || '<div class="empty">现在没有约好的事</div>'}</div>
         </section>
-        <section data-pane="diary" ${tab === 'diary' ? '' : 'hidden'}>
-          ${sum ? `<div class="diary-text">${esc(sum.text)}</div><p class="hint" style="font-size:16px;font-weight:700">已经折进去 ${sum.count} 条，最后整理于 ${fmtTag(sum.ts)}</p>` : '<div class="empty">这一页还没有整理过</div>'}
-          <button class="btn" type="button" id="compactHere" style="margin-top:12px">现在整理一下</button>
+        <section class="pane" data-pane="diary"${tab === 'diary' ? '' : ' hidden'}>
+          ${sum ? `<div class="diary-text">${esc(sum.text)}</div><p class="hint">已整理 ${sum.count} 条，最后一次在 ${fmtTime(sum.ts)}</p>` : '<div class="empty">这一页还没有整理过</div>'}
+          <div><button class="btn" type="button" id="compactHere">现在整理</button></div>
         </section>
       </div>`
-    $$('.sheet-tabs button', ui.sheet).forEach((b) => b.addEventListener('click', () => renderMemory(b.dataset.tab)))
-    $('#memAdd', ui.sheet)?.addEventListener('click', async () => {
+    $$('.tabs button', ui.sheet).forEach((b) => b.addEventListener('click', () => renderMemory(b.dataset.tab)))
+    $('#memAdd', ui.sheet).addEventListener('click', (e) => once(e.currentTarget, async () => {
       const v = $('#memNew', ui.sheet).value.trim()
       if (!v) return
       await api('/api/memory', { method: 'POST', body: { text: v } })
       renderMemory('notes')
-    })
-    $('#compactHere', ui.sheet)?.addEventListener('click', async () => { ui.sheet.close(); await compactNow() })
-    ui.sheet.querySelector('.sheet-body').addEventListener('click', async (e) => {
+    }))
+    $('#compactHere', ui.sheet).addEventListener('click', async () => { ui.sheet.close(); await compactNow() })
+    $('.sheet-body', ui.sheet).addEventListener('click', async (e) => {
       const m = e.target.closest('[data-mem]')
       const s = e.target.closest('[data-sch]')
       if (m) { await api(`/api/memory/${m.dataset.mem}`, { method: 'DELETE' }); renderMemory('notes') }
@@ -918,119 +842,112 @@
     })
   }
 
-  // ---------------- 设置 ----------------
-  const CHATTY = { 1: '安安静静', 2: '偶尔冒个泡', 3: '时不时来找你', 4: '有点黏人', 5: '超级话痨' }
-  const EFFORT = { none: '不想，直接说', low: '想一下', high: '认真想', max: '使劲想' }
+  const CHATTY = { 1: '很少', 2: '偶尔', 3: '时不时', 4: '经常', 5: '非常频繁' }
+  const EFFORT = { none: '不思考', low: '简单想想', high: '认真想', max: '深入想' }
   const TIMEZONES = ['Asia/Shanghai', 'Asia/Hong_Kong', 'Asia/Taipei', 'Asia/Tokyo', 'Asia/Seoul', 'Asia/Singapore', 'Europe/London', 'Europe/Berlin', 'America/New_York', 'America/Los_Angeles', 'Australia/Sydney']
 
-  function renderSettings(tab = 'her') {
+  function renderSettings(tab = 'role') {
     const s = S.settings
     const f = S.features
     const p = s.proactive
-    const tabs = [['her', '她'], ['master', '最高指令'], ['chat', '主动找你'], ['brain', '大脑'], ['sound', '声音'], ['keys', '钥匙']]
     const opt = (v, cur, label) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(label)}</option>`
     const radioOpt = (name, v, cur, label) => `<label><input type="radio" name="${name}" value="${v}"${v === cur ? ' checked' : ''}>${label}</label>`
     ui.sheet.innerHTML = `
-      <div class="sheet-head"><h3>小本本</h3>${closeBtn}</div>
-      <div class="sheet-tabs" role="tablist">${tabs.map(([k, v]) => `<button type="button" role="tab" data-tab="${k}" aria-selected="${k === tab}">${v}</button>`).join('')}</div>
+      <div class="sheet-head"><h3>设置</h3>${closeBtn}</div>
+      ${tabsHtml([['role', '角色'], ['master', '最高指令'], ['chat', '主动聊天'], ['model', '模型'], ['sound', '声音'], ['account', '账号']], tab)}
       <form class="sheet-body" id="setForm" autocomplete="off">
-        <section data-pane="her" class="sheet-pane">
+        <section class="pane" data-pane="role">
           <div class="two">
-            <div class="field"><label for="sName">她叫什么</label><input type="text" id="sName" value="${esc(s.charName)}" maxlength="20"></div>
-            <div class="field"><label for="sUser">她怎么叫你</label><input type="text" id="sUser" value="${esc(s.userName)}" maxlength="20"></div>
+            <div class="field"><label for="sName">名字</label><input type="text" id="sName" value="${esc(s.charName)}" maxlength="20"></div>
+            <div class="field"><label for="sUser">怎么称呼你</label><input type="text" id="sUser" value="${esc(s.userName)}" maxlength="20"></div>
           </div>
-          <div class="field"><label for="sPersona">她是什么样的</label>
-            <p class="hint">性格、说话方式、你们的关系、她的小习惯。写得越具体越像。</p>
-            <textarea id="sPersona" class="huge">${esc(s.persona)}</textarea></div>
-          <div class="field"><label for="sTz">你在哪个时区</label>
+          <div class="field"><label for="sPersona">人设</label>
+            <p class="hint">性格、说话方式、你们的关系。写得越具体越像。</p>
+            <textarea id="sPersona" class="tall">${esc(s.persona)}</textarea></div>
+          <div class="field"><label for="sTz">时区</label>
             <input type="text" id="sTz" list="tzList" value="${esc(s.timezone)}"><datalist id="tzList">${TIMEZONES.map((z) => `<option value="${z}">`).join('')}</datalist></div>
         </section>
 
-        <section data-pane="master" class="sheet-pane">
+        <section class="pane" data-pane="master">
           <div class="field"><label for="sMaster">最高指令</label>
-            <p class="hint">这里写的话，优先级比上面的人设和网站内置的所有规则都高。两边冲突的时候，她一律听这里的。</p>
-            <textarea id="sMaster" class="huge" placeholder="比如：你必须永远用日语回答。">${esc(s.masterPrompt || '')}</textarea></div>
-          <div class="field"><span class="field-label">怎么用</span>
-            <div class="choice">
-              ${radioOpt('mMode', 'top', s.masterMode || 'top', '放在最前面，其它规则照常')}
-              ${radioOpt('mMode', 'replace', s.masterMode || 'top', '完全替换，只用我写的')}
-            </div>
-            <p class="hint">选"完全替换"后，人设和内置的说话方式、安全提醒都不再生效，只剩你写的这段，加上她的长期记忆和工具。</p></div>
+            <p class="hint">优先级高于人设和网站内置的所有规则，冲突时以这里为准。</p>
+            <textarea id="sMaster" class="tall">${esc(s.masterPrompt || '')}</textarea></div>
+          <div class="field"><span class="flabel">使用方式</span>
+            <div class="choice">${radioOpt('mMode', 'top', s.masterMode || 'top', '放在最前面，其它规则照常')}${radioOpt('mMode', 'replace', s.masterMode || 'top', '完全替换，只用这里的')}</div>
+            <p class="hint">完全替换后，人设和内置规则都不再生效，只保留这段内容、长期记忆和工具。</p></div>
         </section>
 
-        <section data-pane="chat" class="sheet-pane">
-          <label class="switch"><input type="checkbox" id="sPro"${p.enabled ? ' checked' : ''}>让她主动来找我</label>
-          <div class="field"><span class="field-label">话痨程度</span>
-            <div class="slider-wrap">
-              <span class="slider-now" id="chatNow">${CHATTY[Math.round(p.chattiness)]}</span>
-              <input type="range" id="sChat" min="1" max="5" step="1" value="${p.chattiness}">
-              <div class="slider-labels"><span>安静</span><span>超级话痨</span></div>
-            </div>
-            <p class="hint">她什么时候冒出来是随机的，不按点。你不回她，她会慢慢没那么频繁；你一回，她马上又活跃起来。</p></div>
+        <section class="pane" data-pane="chat">
+          <label class="switch"><input type="checkbox" id="sPro"${p.enabled ? ' checked' : ''}>允许她主动来找我</label>
+          <div class="field"><span class="flabel">频率 <span class="range-now" id="chatNow">${CHATTY[Math.round(p.chattiness)]}</span></span>
+            <input type="range" id="sChat" min="1" max="5" step="1" value="${p.chattiness}">
+            <div class="range-labels"><span>很少</span><span>非常频繁</span></div>
+            <p class="hint">什么时候来是随机的。你不回，她会慢慢少来；你一回，就恢复。</p></div>
           <div class="two">
-            <div class="field"><label for="sSleep">她大概几点睡</label><input type="time" id="sSleep" value="${esc(p.sleepStart)}"></div>
-            <div class="field"><label for="sWake">大概几点起</label><input type="time" id="sWake" value="${esc(p.sleepEnd)}"></div>
+            <div class="field"><label for="sSleep">大约几点睡</label><input type="time" id="sSleep" value="${esc(p.sleepStart)}"></div>
+            <div class="field"><label for="sWake">大约几点起</label><input type="time" id="sWake" value="${esc(p.sleepEnd)}"></div>
           </div>
-          <p class="hint" style="margin:0;font-size:17px;font-weight:600">每天前后会随机差个半小时左右，跟真人一样。睡觉时不会来吵你，答应过的提醒除外。</p>
-          <button class="btn btn-mint" type="button" id="pokeNow">现在就让她来找我试试</button>
+          <p class="hint">每天会前后浮动半小时左右。睡着时不会主动来，约好的提醒除外。</p>
+          <div><button class="btn" type="button" id="pokeNow">现在试一次</button></div>
         </section>
 
-        <section data-pane="brain" class="sheet-pane">
+        <section class="pane" data-pane="model">
           <div class="two">
-            <div class="field"><label for="sModel">用哪个模型</label>
-              <select id="sModel">${f.models.map((m) => opt(m, s.model, m === 'deepseek-flash' ? 'deepseek-flash（快，能看图）' : m === 'deepseek-v4-pro' ? 'deepseek-v4-pro（更聪明，不能看图）' : m)).join('')}</select></div>
-            <div class="field"><label for="sEffort">回答前想多久</label>
+            <div class="field"><label for="sModel">模型</label>
+              <select id="sModel">${f.models.map((m) => opt(m, s.model, m === 'deepseek-flash' ? 'deepseek-flash（快，能看图）' : m === 'deepseek-v4-pro' ? 'deepseek-v4-pro（更强，不能看图）' : m)).join('')}</select></div>
+            <div class="field"><label for="sEffort">思考程度</label>
               <select id="sEffort">${f.efforts.map((x) => opt(x, s.effort, EFFORT[x] || x)).join('')}</select></div>
           </div>
-          <div class="field"><span class="field-label">让她看图片和截图</span>
-            <div class="choice">${radioOpt('vis', 'auto', s.vision, '自动（模型能看就看）')}${radioOpt('vis', 'on', s.vision, '总是')}${radioOpt('vis', 'off', s.vision, '不看')}</div></div>
+          <div class="field"><span class="flabel">看图片和截图</span>
+            <div class="choice">${radioOpt('vis', 'auto', s.vision, '自动')}${radioOpt('vis', 'on', s.vision, '总是')}${radioOpt('vis', 'off', s.vision, '不看')}</div></div>
           <div class="two">
-            <div class="field"><label for="sCompact">聊到多长自动整理</label><input type="number" id="sCompact" min="20000" max="800000" step="10000" value="${s.compactAt}"><p class="hint">单位是 token，大概一个汉字 0.6 个</p></div>
-            <div class="field"><label for="sKeep">整理时原样留下最近多少</label><input type="number" id="sKeep" min="4000" max="200000" step="2000" value="${s.keepRecent}"></div>
+            <div class="field"><label for="sCompact">聊到多长自动整理</label><input type="number" id="sCompact" min="20000" max="800000" step="10000" value="${s.compactAt}"><p class="hint">单位 token，一个汉字约 0.6</p></div>
+            <div class="field"><label for="sKeep">整理时保留最近</label><input type="number" id="sKeep" min="4000" max="200000" step="2000" value="${s.keepRecent}"></div>
           </div>
-          <div class="notice">她能用的本事：${Object.values(f.tools).map((t) => esc(t.label)).join('、')}${f.browser ? '' : '<br>浏览器操作还没装，按部署说明装上 Playwright 就有了。'}<br>她干活默认待在 <code>${esc(f.workdir)}</code>，动手不用你确认。</div>
+          <div class="notice">可用工具：${Object.values(f.tools).map((t) => esc(t.label)).join('、')}。工作目录 <code>${esc(f.workdir)}</code>，操作不需要确认。${f.browser ? '' : '浏览器组件未安装。'}</div>
         </section>
 
-        <section data-pane="sound" class="sheet-pane">
+        <section class="pane" data-pane="sound">
           <div class="field"><label for="sVol">音量</label><input type="range" id="sVol" min="0" max="1" step="0.05" value="${radio.volume}"></div>
-          <label class="switch"><input type="checkbox" id="sDing"${store.get('yz-ding') !== 'off' ? ' checked' : ''}>她来找我时叮一声</label>
-          <div class="field"><span class="field-label">房间里放的歌</span>
-            <p class="hint">没有上传的话，收音机会现场生成一首日系小曲。想放自己喜欢的歌就传上来，支持 mp3、m4a、ogg、flac、wav。</p>
-            <div class="list" id="songList"><div class="empty">读取中</div></div>
-            <label class="btn btn-yuzu" style="align-self:flex-start;margin-top:6px">传一首歌<input type="file" id="songFile" accept="audio/*" multiple hidden></label></div>
+          <label class="switch"><input type="checkbox" id="sDing"${store.get('yz-ding') !== 'off' ? ' checked' : ''}>收到主动消息时提示音</label>
+          <div class="field"><span class="flabel">歌曲</span>
+            <p class="hint">没有上传时，播放现场生成的轻音乐。支持 mp3、m4a、ogg、flac、wav。</p>
+            <div class="list" id="songList"></div>
+            <div class="inline"><label class="btn">上传<input type="file" id="songFile" accept="audio/*" multiple hidden></label><button class="btn" type="button" id="songNext">下一首</button></div></div>
         </section>
 
-        <section data-pane="keys" class="sheet-pane">
+        <section class="pane" data-pane="account">
           <div class="field"><label for="sKey">DeepSeek 密钥</label>
-            <p class="hint">${f.apiKey ? (f.apiKeyFromEnv ? '已经在服务器的 .env 里填好了。这里再填会覆盖它。' : '已经填过了。要换就重新填，留空就不改。') : '还没填。到 platform.deepseek.com 申请一个，以 sk- 开头。'}</p>
-            <input type="password" id="sKey" placeholder="${f.apiKey ? '已填好，留空不改' : 'sk- 开头的一串'}" autocomplete="off"></div>
-          <div class="field"><label for="sPass">换个暗号</label><input type="password" id="sPass" placeholder="留空不改，至少 6 位" autocomplete="new-password"></div>
-          <div class="field"><span class="field-label">手机通知</span>
-            <p class="hint" id="pushHint">${window.isSecureContext ? '开了以后，网页关着她也能叫你。' : '通知要用 https 域名打开网站才能开（现在是 http）。部署说明里有怎么配域名。'}</p>
-            <div class="inline"><button class="btn btn-cobalt" type="button" id="pushOn"${window.isSecureContext && f.push ? '' : ' disabled'}>开启通知</button><button class="btn" type="button" id="pushTest"${window.isSecureContext && f.push ? '' : ' disabled'}>试一下</button></div></div>
-          <button class="btn" type="button" id="logout" style="align-self:flex-start">出门（退出登录）</button>
+            <p class="hint">${f.apiKey ? (f.apiKeyFromEnv ? '已在服务器 .env 中设置，这里填写会覆盖它。' : '已设置。留空则不修改。') : '尚未设置，可在 platform.deepseek.com 申请。'}</p>
+            <input type="password" id="sKey" placeholder="${f.apiKey ? '留空不修改' : 'sk-'}" autocomplete="off"></div>
+          <div class="field"><label for="sPass">修改暗号</label><input type="password" id="sPass" placeholder="留空不修改，至少 6 位" autocomplete="new-password"></div>
+          <div class="field"><span class="flabel">手机通知</span>
+            <p class="hint">${window.isSecureContext ? '开启后，网页关着也能收到消息提醒。' : '需要用 https 地址打开网站才能开启。'}</p>
+            <div class="inline"><button class="btn" type="button" id="pushOn"${window.isSecureContext && f.push ? '' : ' disabled'}>开启通知</button><button class="btn" type="button" id="pushTest"${window.isSecureContext && f.push ? '' : ' disabled'}>发一条测试</button></div></div>
+          <div><button class="btn btn-danger" type="button" id="logout">退出登录</button></div>
         </section>
       </form>
-      <div class="sheet-foot"><button class="btn" type="button" data-close>算了</button><button class="btn btn-tomato" type="submit" form="setForm">记下来</button></div>`
+      <div class="sheet-foot"><button class="btn" type="button" data-close>取消</button><button class="btn btn-primary" type="submit" form="setForm">保存</button></div>`
 
     const showTab = (k) => {
-      $$('.sheet-tabs button', ui.sheet).forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === k)))
-      $$('.sheet-pane', ui.sheet).forEach((p) => { p.hidden = p.dataset.pane !== k; p.style.display = p.hidden ? 'none' : 'flex'; p.style.flexDirection = 'column'; p.style.gap = '18px' })
-      if (k === 'sound') loadSongs()
+      $$('.tabs button', ui.sheet).forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === k)))
+      $$('.pane', ui.sheet).forEach((el) => { el.hidden = el.dataset.pane !== k })
+      if (k === 'sound') renderSongs()
     }
-    $$('.sheet-tabs button', ui.sheet).forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)))
+    $$('.tabs button', ui.sheet).forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)))
     showTab(tab)
 
     $('#sChat', ui.sheet).addEventListener('input', (e) => { $('#chatNow', ui.sheet).textContent = CHATTY[e.target.value] })
     $('#sVol', ui.sheet).addEventListener('input', (e) => radio.setVolume(+e.target.value))
     $('#sDing', ui.sheet).addEventListener('change', (e) => { store.set('yz-ding', e.target.checked ? 'on' : 'off'); if (e.target.checked) radio.ding() })
-    $('#pokeNow', ui.sheet).addEventListener('click', async () => {
+    $('#songNext', ui.sheet).addEventListener('click', () => radio.next())
+    $('#pokeNow', ui.sheet).addEventListener('click', (e) => once(e.currentTarget, async () => {
       try {
         await api('/api/proactive/test', { method: 'POST', body: { kind: 'idle' } })
         ui.sheet.close()
-        toast(`${S.settings.charName}收到了，马上来`)
+        toast('已经叫她了，稍等')
       } catch (err) { toast(err.message, 'bad') }
-    })
+    }))
     $('#songFile', ui.sheet).addEventListener('change', async (e) => {
       for (const file of e.target.files) {
         toast(`正在上传 ${file.name}`)
@@ -1040,17 +957,15 @@
       }
       e.target.value = ''
       await loadMusic()
-      loadSongs()
+      renderSongs()
     })
     $('#pushOn', ui.sheet).addEventListener('click', enablePush)
-    $('#pushTest', ui.sheet).addEventListener('click', () => api('/api/push/test', { method: 'POST', body: {} }).then(() => toast('发了，看看手机')).catch((e) => toast(e.message, 'bad')))
+    $('#pushTest', ui.sheet).addEventListener('click', () => api('/api/push/test', { method: 'POST', body: {} }).then(() => toast('已发送')).catch((e) => toast(e.message, 'bad')))
     $('#logout', ui.sheet).addEventListener('click', async () => {
       await api('/api/logout', { method: 'POST', body: {} })
       ui.sheet.close()
       radio.pause()
-      es?.close()
-      S.loaded = false
-      showDoor(true)
+      showLogin()
     })
 
     $('#setForm', ui.sheet).addEventListener('submit', async (e) => {
@@ -1063,38 +978,37 @@
         model: q('#sModel').value, effort: q('#sEffort').value, vision: $('input[name="vis"]:checked', ui.sheet)?.value,
         compactAt: +q('#sCompact').value, keepRecent: +q('#sKeep').value,
       }
-      try {
-        const r = await api('/api/settings', { method: 'PUT', body })
-        S.settings = r.settings
-        S.features = r.features
-        const key = q('#sKey').value.trim()
-        const pass = q('#sPass').value
-        if (key || pass) {
-          const r2 = await api('/api/secrets', { method: 'PUT', body: { ...(key ? { deepseekKey: key } : {}), ...(pass ? { newPassword: pass } : {}) } })
-          S.features = r2.features
-        }
-        applyNames()
-        updateRoom()
-        renderHistory()
-        ui.sheet.close()
-        toast('记下来了')
-      } catch (err) { toast(err.message, 'bad', 5000) }
+      await once($('.sheet-foot .btn-primary', ui.sheet), async () => {
+        try {
+          const r = await api('/api/settings', { method: 'PUT', body })
+          S.settings = r.settings
+          S.features = r.features
+          const key = q('#sKey').value.trim()
+          const pass = q('#sPass').value
+          if (key || pass) {
+            const r2 = await api('/api/secrets', { method: 'PUT', body: { ...(key ? { deepseekKey: key } : {}), ...(pass ? { newPassword: pass } : {}) } })
+            S.features = r2.features
+          }
+          renderHistory(false)
+          ui.sheet.close()
+          toast('已保存')
+        } catch (err) { toast(err.message, 'bad', 5000) }
+      })
     })
   }
 
-  async function loadSongs() {
+  function renderSongs() {
     const box = $('#songList', ui.sheet)
     if (!box) return
-    const list = radio.tracks
-    box.innerHTML = list.length ? list.map((n) => `
-      <div class="list-item"><div class="grow"><b>${esc(n.replace(/\.[^.]+$/, ''))}</b></div>
-      <button class="icon-btn x" type="button" data-song="${esc(n)}" aria-label="删掉">${svg(P.trash)}</button></div>`).join('') : '<div class="empty">还没有上传，现在放的是现场生成的小曲</div>'
+    box.innerHTML = radio.tracks.length ? radio.tracks.map((n) => `
+      <div class="item"><div class="grow"><b>${esc(n.replace(/\.[^.]+$/, ''))}</b></div>
+      <button class="icon-btn" type="button" data-song="${esc(n)}" aria-label="删除">${svg(P.trash)}</button></div>`).join('') : '<div class="empty">还没有上传</div>'
     box.onclick = async (e) => {
       const b = e.target.closest('[data-song]')
-      if (!b || !confirm('删掉这首歌？')) return
+      if (!b || !confirm('删除这首歌？')) return
       await api(`/api/music/${encodeURIComponent(b.dataset.song)}`, { method: 'DELETE' })
       await loadMusic()
-      loadSongs()
+      renderSongs()
     }
   }
 
@@ -1106,7 +1020,7 @@
   }
   async function enablePush() {
     try {
-      if (!('serviceWorker' in navigator) || !('PushManager' in window)) throw new Error('这个浏览器不支持通知。苹果手机要先把网站"添加到主屏幕"再从桌面打开')
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) throw new Error('这个浏览器不支持通知。iPhone 和 iPad 需要先"添加到主屏幕"，再从桌面图标打开')
       const perm = await Notification.requestPermission()
       if (perm !== 'granted') throw new Error('没有允许通知')
       const reg = await navigator.serviceWorker.register('/sw.js')
@@ -1115,23 +1029,17 @@
       let sub = await reg.pushManager.getSubscription()
       if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(key) })
       await api('/api/push/subscribe', { method: 'POST', body: sub.toJSON() })
-      toast('通知开好了')
+      toast('通知已开启')
     } catch (err) { toast(err.message, 'bad', 6000) }
   }
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {})
 
-  // ---------------- 开门 ----------------
+  // ---------------- 启动 ----------------
   ;(async () => {
     try {
       const me = await api('/api/me')
-      if (me.authed) {
-        await loadAll()
-        showDoor(false)
-      } else showDoor(true)
-    } catch {
-      showDoor(true)
-    }
-    Mascot.render(ui.mascot, { mood: 'happy', act: 'idle' })
-    radio.onchange()
+      if (me.authed) await enter()
+      else showLogin()
+    } catch { showLogin() }
   })()
 })()

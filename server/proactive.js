@@ -113,7 +113,7 @@ export async function fire(kind, extra = {}) {
   await saveConversation(conv)
   if (kind !== 'reminder') await patchState({ unanswered: getState().unanswered + 1 })
   broadcast({ type: 'proactive', convId: conv.id, unread: conv.unread, kind })
-  await notifyAll({ title: s.charName, body: said[0].replace(/\s+/g, ' ').slice(0, 90), convId: conv.id, tag: `yuzu-${conv.id}` })
+  await notifyAll({ title: '有新消息', body: said[0].replace(/\s+/g, ' ').slice(0, 90), convId: conv.id, tag: `yuzu-${conv.id}` })
   return { ok: true }
 }
 

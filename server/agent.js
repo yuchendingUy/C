@@ -93,7 +93,7 @@ async function executeTool(call, ctx) {
 
 // 跑一轮：调模型 → 有工具调用就执行 → 再调模型 …… 直到它不再调用工具
 export async function runTurn(conv, { proactive = false, triggerId = null } = {}) {
-  if (running.has(conv.id)) throw Object.assign(new Error(`${getSettings().charName}还在忙上一句呢`), { status: 409 })
+  if (running.has(conv.id)) throw Object.assign(new Error('还在回上一句，等一下'), { status: 409 })
   const ctrl = new AbortController()
   running.set(conv.id, { ctrl })
   const s = getSettings()

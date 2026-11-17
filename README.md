@@ -1,4 +1,4 @@
-# 柚柚的房间
+# 小屋
 
 一个住在你服务器里的小伙伴。她会跟你聊天，会随机主动找你搭话，也能直接在服务器上帮你干活：敲命令、改文件、上网、开浏览器点按钮。
 
@@ -15,9 +15,23 @@ curl -fsSL https://raw.githubusercontent.com/yuchendingUy/C/claude/repository-se
 装完会打印网址和**进门暗号**。用浏览器打开 `http://你的服务器IP`，对上暗号进门，在「小本本 → 钥匙」里填 DeepSeek 密钥就能聊了。
 
 - 打不开：去雨云面板「防火墙规则」放行 TCP 80 端口（如果脚本说用的是 8787，就放行 8787）。
-- 更新：再跑一次同一行命令。聊天记录、设置、密钥都在 `/opt/yuzu/data` 和 `/opt/yuzu/.env`，不会丢。
+- 更新：见下面「更新」。聊天记录、设置、密钥都在 `/opt/yuzu/data` 和 `/opt/yuzu/.env`，不会丢。
 - 不要浏览器功能（省几百 MB）：`curl -fsSL ...install.sh | NO_BROWSER=1 bash`
 - 看日志：`journalctl -u yuzu -f`　重启：`systemctl restart yuzu`
+
+## 更新
+
+立即更新到最新版本，并开启自动更新（每 15 分钟检查一次，有新版本才更新，启动失败自动退回旧版本）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yuchendingUy/C/claude/repository-selection-pwzk42/deploy/update.sh | bash -s -- auto-on
+```
+
+以后手动更新：`bash /opt/yuzu/deploy/update.sh`
+关闭自动更新：`bash /opt/yuzu/deploy/update.sh auto-off`
+查看更新记录：`journalctl -u yuzu-update -n 30 --no-pager`
+
+注意：更新会覆盖 `/opt/yuzu` 里的代码。如果你让她改过网站自己的代码，更新时这些改动会被换掉（`data/` 和 `.env` 不受影响）。
 
 ## 她会什么
 

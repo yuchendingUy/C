@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 柚柚的房间 一键安装 / 更新（Debian / Ubuntu，用 root 运行）
+# 小屋 一键安装（Debian / Ubuntu，用 root 运行）
 #   curl -fsSL https://raw.githubusercontent.com/yuchendingUy/C/claude/repository-selection-pwzk42/deploy/install.sh | bash
 # 再跑一次就是更新，聊天记录、设置、密钥都不会丢。
 # 不想装浏览器（电脑操作）功能：在命令前面加 NO_BROWSER=1
