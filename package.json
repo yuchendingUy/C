@@ -1,0 +1,20 @@
+{
+  "name": "yuzu-room",
+  "version": "0.1.0",
+  "private": true,
+  "description": "柚柚的房间：会主动找你、能在服务器上干活的小伙伴",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "check": "node --check server/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@fontsource/zcool-kuaile": "5.3.0",
+    "lxgw-wenkai-screen-webfont": "1.7.0",
+    "web-push": "3.6.7"
+  }
+}
