@@ -396,17 +396,13 @@
     else if (name === 'write') body += `<span class="label">写进 ${esc(a.path)}</span><pre>${esc(clipText(String(a.content || ''), 4000))}</pre>`
     else if (name === 'edit') body += `<span class="label">改 ${esc(a.path)}</span><pre>${esc(`- ${clipText(String(a.oldString || ''), 2000)}\n+ ${clipText(String(a.newString || ''), 2000)}`)}</pre>`
     else if (!LIFE.has(name) && Object.keys(a).length) body += `<span class="label">参数</span><pre>${esc(JSON.stringify(a, null, 2))}</pre>`
-    if (result) {
-      body += `<span class="label">结果</span><pre>${esc(clipText(result.content || '', 12000))}</pre>`
-      if (result.images?.length) body += `<div class="imgs">${result.images.map((id) => `<img src="/api/files/${encodeURIComponent(id)}" alt="截图" loading="lazy">`).join('')}</div>`
-    }
-    const shot = result?.images?.length ? `<div class="imgs" style="padding:0 12px 10px">${result.images.map((id) => `<img src="/api/files/${encodeURIComponent(id)}" alt="截图" loading="lazy">`).join('')}</div>` : ''
+    if (result) body += `<span class="label">结果</span><pre>${esc(clipText(result.content || '', 12000))}</pre>`
+    const shots = result?.images?.length ? `<div class="imgs act-shots">${result.images.map((id) => `<img class="shot-thumb" src="/api/files/${encodeURIComponent(id)}" alt="她看到的画面" loading="lazy">`).join('')}</div>` : ''
     return `<details class="act ${kind}">
       <summary><span class="act-icon">${svg(P[TOOL_ICON[name]] || P.bash)}</span>
       <span class="act-text"><b>${esc(meta.label || name)}</b><code>${esc(toolSummary(name, a))}</code></span>
       <span class="act-state ${cls}">${label}</span></summary>
-      ${shot}
-      <div class="act-body">${body}</div></details>`
+      <div class="act-body">${body}</div></details>${shots}`
   }
 
   const TRIGGER_TAG = { idle: '跑来找你了', wake: '刚睡醒就来找你', reminder: '按约好的时间来了' }

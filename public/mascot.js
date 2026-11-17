@@ -1,7 +1,7 @@
 // 柚柚本人（原创角色）：一颗圆滚滚的柚子，头顶一片叶子
 // window.Mascot.render(el, { mood, act })
 ;(function () {
-  const INK = 'var(--ink)'
+  const INK = '#241A3E'
   const W = 6
 
   const eyes = {
@@ -86,7 +86,7 @@
     const f = face(mood, act)
     const b = f.blush
     return `<svg viewBox="0 0 220 220" class="mascot-svg" aria-hidden="true">
-      <ellipse cx="110" cy="206" rx="64" ry="9" fill="var(--ink)" opacity=".18"/>
+      <ellipse cx="110" cy="206" rx="64" ry="9" fill="#241A3E" opacity=".18"/>
       <ellipse cx="86" cy="196" rx="16" ry="9" fill="var(--yuzu-deep)" stroke="${INK}" stroke-width="5"/>
       <ellipse cx="134" cy="196" rx="16" ry="9" fill="var(--yuzu-deep)" stroke="${INK}" stroke-width="5"/>
       <g class="arm-l"><ellipse cx="38" cy="140" rx="13" ry="17" fill="var(--yuzu)" stroke="${INK}" stroke-width="5"/></g>
@@ -119,13 +119,13 @@
     },
     head() {
       return `<svg viewBox="22 14 176 196" aria-hidden="true">
-        <path d="M110 62 C 182 60, 196 112, 188 146 C 178 190, 140 198, 110 198 C 80 198, 42 190, 32 146 C 24 112, 38 60, 110 62 Z" fill="var(--yuzu)" stroke="var(--ink)" stroke-width="9"/>
-        <path d="M110 64 q3 -12 -3 -22" fill="none" stroke="var(--ink)" stroke-width="8" stroke-linecap="round"/>
-        <path d="M108 46 C 118 22, 152 18, 166 28 C 154 50, 126 56, 108 46 Z" fill="var(--mint)" stroke="var(--ink)" stroke-width="7" stroke-linejoin="round"/>
+        <path d="M110 62 C 182 60, 196 112, 188 146 C 178 190, 140 198, 110 198 C 80 198, 42 190, 32 146 C 24 112, 38 60, 110 62 Z" fill="var(--yuzu)" stroke="#241A3E" stroke-width="9"/>
+        <path d="M110 64 q3 -12 -3 -22" fill="none" stroke="#241A3E" stroke-width="8" stroke-linecap="round"/>
+        <path d="M108 46 C 118 22, 152 18, 166 28 C 154 50, 126 56, 108 46 Z" fill="var(--mint)" stroke="#241A3E" stroke-width="7" stroke-linejoin="round"/>
         <ellipse cx="68" cy="150" rx="12" ry="7" fill="var(--pink)"/><ellipse cx="152" cy="150" rx="12" ry="7" fill="var(--pink)"/>
-        <ellipse cx="84" cy="126" rx="10" ry="13" fill="var(--ink)"/><ellipse cx="136" cy="126" rx="10" ry="13" fill="var(--ink)"/>
+        <ellipse cx="84" cy="126" rx="10" ry="13" fill="#241A3E"/><ellipse cx="136" cy="126" rx="10" ry="13" fill="#241A3E"/>
         <circle cx="88" cy="120" r="4" fill="#fff"/><circle cx="140" cy="120" r="4" fill="#fff"/>
-        <path d="M98 148 Q104 156 110 148 Q116 156 122 148" fill="none" stroke="var(--ink)" stroke-width="6" stroke-linecap="round"/>
+        <path d="M98 148 Q104 156 110 148 Q116 156 122 148" fill="none" stroke="#241A3E" stroke-width="6" stroke-linecap="round"/>
       </svg>`
     },
   }

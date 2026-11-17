@@ -404,6 +404,7 @@ svg { display: block; }
 .act-body .label { display: block; padding: 4px 14px; background: var(--paper-2); color: var(--ink); border-bottom: 2px solid var(--ink); font: 400 15px var(--f-display); }
 .act-body .label + pre + .label { border-top: 2px solid var(--ink); }
 .act-body .imgs { padding: 12px; background: var(--paper); }
+.act-shots img.shot-thumb { max-width: min(420px, 100%); max-height: 280px; }
 .act.life { background: var(--mint-tint); }
 .act.life .act-icon { background: var(--mint); }
 .act.life .act-icon svg { stroke: #12302A; }

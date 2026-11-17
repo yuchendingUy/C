@@ -178,6 +178,8 @@ async function tick() {
   }
 }
 
+export { tick as _tick }
+
 export function startProactive() {
   setTimeout(tick, 20 * 1000)
   setInterval(tick, MIN)
