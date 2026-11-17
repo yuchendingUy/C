@@ -80,14 +80,15 @@ export async function noteUserActivity() {
 
 function triggerText(kind, s, st, extra = {}) {
   const lp = localParts(new Date(), s.timezone)
-  const since = st.lastUserAt ? `${s.userName}上次跟你说话是 ${humanGap(Date.now() - st.lastUserAt)} 前。` : ''
-  const head = `【悄悄话：这条不是${s.userName}发的，是系统提示，对方看不到】现在是${lp.text}（${partOfDay(lp.hour)}）。${since}`
+  const who = s.userName === '你' ? '对方' : s.userName
+  const since = st.lastUserAt ? `${who}上次跟你说话是 ${humanGap(Date.now() - st.lastUserAt)}前。` : ''
+  const head = `【悄悄话：这条不是${who}发的，是系统提示，对方看不到】现在是${lp.text}（${partOfDay(lp.hour)}）。${since}`
   const tail = `像随手拿起手机发消息一样：别解释你为什么来找对方，别每次都问"在干嘛"，可以只发一句，最多 3 条短消息。要是真的觉得不合适，就只回 [SKIP]。`
   if (kind === 'reminder') {
-    return `${head}\n到了你之前跟自己约好的时间，你当时的备注：「${extra.note}」\n去找${s.userName}把这件事办了，需要的话可以用工具。说话还是平时的样子。`
+    return `${head}\n到了你之前跟自己约好的时间，你当时的备注：「${extra.note}」\n去找${who}把这件事办了，需要的话可以用工具。说话还是平时的样子。`
   }
   if (kind === 'wake') {
-    return `${head}\n你刚睡醒。迷迷糊糊地想找${s.userName}说句话（早安也行，说梦也行，赖床也行，随你）。\n${tail}`
+    return `${head}\n你刚睡醒。迷迷糊糊地想找${who}说句话（早安也行，说梦也行，赖床也行，随你）。\n${tail}`
   }
   const ignored = st.unanswered > 0 ? `${pick(IGNORED)}。` : ''
   return `${head}\n${ignored}这会儿你${pick(IMPULSES)}。\n${tail}`

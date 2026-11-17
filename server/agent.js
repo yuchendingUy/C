@@ -246,6 +246,11 @@ export async function compactConversation(conv, { manual = false, emit } = {}) {
     cut = i
   }
   while (cut < live.length && live[cut].role !== 'user') cut++
+  if (manual && cut <= 1) {
+    // 手动整理但内容不多：只原样留下最后两轮
+    const users = live.map((m, i) => (m.role === 'user' ? i : -1)).filter((i) => i >= 0)
+    cut = users.length >= 3 ? users[users.length - 2] : 0
+  }
   if (cut >= live.length) {
     // 最近一段太长了：至少保留最后一条用户消息开始的内容
     cut = live.findLastIndex((m) => m.role === 'user')

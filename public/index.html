@@ -30,7 +30,7 @@
   </div>
   <form class="door-form" id="doorForm" autocomplete="on">
     <label class="door-label" id="doorLabel" for="doorPass">对个暗号</label>
-    <input id="doorPass" name="password" type="password" autocomplete="current-password" placeholder="暗号是……">
+    <input id="doorPass" name="password" type="password" autocomplete="current-password" placeholder="在这里输入暗号">
     <button class="btn btn-big btn-tomato" id="knockBtn" type="submit">咚咚，敲门</button>
     <p class="door-err" id="doorErr" role="alert"></p>
   </form>
@@ -79,6 +79,8 @@
       </button>
     </div>
 
+    <div class="memo" id="memo"></div>
+
     <nav class="room-nav">
       <button class="btn" data-open="diary" type="button"><svg viewBox="0 0 24 24"><path d="M5 3h11a3 3 0 0 1 3 3v15H8a3 3 0 0 1-3-3zM8 17h11M9 7h6"/></svg>日记本<em class="badge" id="diaryBadge" hidden></em></button>
       <button class="btn" data-open="memory" type="button"><svg viewBox="0 0 24 24"><path d="M12 21s-8-4.8-8-11a4.5 4.5 0 0 1 8-2.8A4.5 4.5 0 0 1 20 10c0 6.2-8 11-8 11z"/></svg>回忆</button>
@@ -116,7 +118,7 @@
           <input type="file" id="fileInput" accept="image/*" multiple hidden>
           <svg viewBox="0 0 24 24"><path d="M4 6h16v13H4zM4 15l5-5 4 4 2-2 5 5M15.5 9.5h.01"/></svg>
         </label>
-        <textarea id="input" rows="1" placeholder="跟她说点什么……" enterkeyhint="send"></textarea>
+        <textarea id="input" rows="1" placeholder="跟她说点什么" enterkeyhint="send"></textarea>
         <button class="btn btn-send" id="sendBtn" type="submit">发出去</button>
       </div>
     </form>

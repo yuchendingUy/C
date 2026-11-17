@@ -53,7 +53,7 @@ export function clip(text, max) {
   if (text.length <= max) return text
   const head = Math.floor(max * 0.7)
   const tail = max - head
-  return `${text.slice(0, head)}\n\n……（中间省略了 ${text.length - max} 个字符）……\n\n${text.slice(-tail)}`
+  return `${text.slice(0, head)}\n\n[中间省略了 ${text.length - max} 个字符]\n\n${text.slice(-tail)}`
 }
 
 // 粗略估算 token：中日韩字符约 0.6，其它约 0.27
@@ -94,6 +94,7 @@ export function partOfDay(hour) {
 
 export function humanGap(ms) {
   const m = Math.round(ms / 60000)
+  if (m < 1) return '不到 1 分钟'
   if (m < 60) return `${m} 分钟`
   const h = Math.round(m / 6) / 10
   if (h < 48) return `${h} 小时`

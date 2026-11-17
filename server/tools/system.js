@@ -130,7 +130,7 @@ export const systemTools = [
         const items = await fsp.readdir(p, { withFileTypes: true })
         items.sort((x, y) => Number(y.isDirectory()) - Number(x.isDirectory()) || x.name.localeCompare(y.name))
         const lines = items.slice(0, 500).map((d) => (d.isDirectory() ? `${d.name}/` : d.name))
-        return `${p}/\n${lines.join('\n')}${items.length > 500 ? `\n……还有 ${items.length - 500} 项` : ''}`
+        return `${p}/\n${lines.join('\n')}${items.length > 500 ? `\n（还有 ${items.length - 500} 项没列出）` : ''}`
       }
       if (st.size > 20 * 1024 * 1024) return `文件太大（${(st.size / 1048576).toFixed(1)} MB），用 bash 的 head/tail/grep 看吧`
       const buf = await fsp.readFile(p)
@@ -139,7 +139,7 @@ export const systemTools = [
       const start = Math.max(1, Number(a.offset) || 1)
       const limit = Math.min(Math.max(Number(a.limit) || 2000, 1), 2000)
       const slice = all.slice(start - 1, start - 1 + limit)
-      const body = slice.map((l, i) => `${String(start + i).padStart(5)}| ${l.length > 2000 ? `${l.slice(0, 2000)}……` : l}`).join('\n')
+      const body = slice.map((l, i) => `${String(start + i).padStart(5)}| ${l.length > 2000 ? `${l.slice(0, 2000)}[这行太长，截断了]` : l}`).join('\n')
       const more = start - 1 + limit < all.length ? `\n\n（共 ${all.length} 行，还没读完，用 offset=${start + limit} 继续）` : ''
       return clip(body, 60000) + more
     },
@@ -271,7 +271,7 @@ export const systemTools = [
       }
       const lines = r.out.split('\n').filter(Boolean)
       if (!lines.length) return '没搜到'
-      return clip(lines.slice(0, 200).join('\n'), 30000) + (lines.length > 200 ? `\n……共 ${lines.length} 行，只显示前 200 行` : '')
+      return clip(lines.slice(0, 200).join('\n'), 30000) + (lines.length > 200 ? `\n（共 ${lines.length} 行，只显示前 200 行）` : '')
     },
   },
   {

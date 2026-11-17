@@ -169,6 +169,21 @@
     $('#meterFill').style.width = `${Math.max(4, aff)}%`
     $('#mmFill').style.width = `${Math.max(4, aff)}%`
     void running
+    renderMemo()
+  }
+
+  function renderMemo() {
+    const el = $('#memo')
+    if (!el) return
+    const p = parts(Date.now())
+    const name = esc(S.settings?.charName || '柚柚')
+    const lines = [`<b>现在 ${String(p.h).padStart(2, '0')}:${p.mi}</b>，${name}${S.state?.asleep ? '睡着了，别吵她' : '醒着'}`]
+    const next = (S.schedules || []).slice().sort((a, b) => a.at - b.at)[0]
+    if (next) lines.push(`约好了 <b>${esc(fmtTag(next.at))}</b> 来找你`)
+    const mem = (S.memory || []).at(-1)
+    if (mem) lines.push(`小本本上写着：${esc(mem.text.length > 34 ? mem.text.slice(0, 34) + '等等' : mem.text)}`)
+    else lines.push('小本本上还什么都没写')
+    el.innerHTML = lines.map((l) => `<p>${l}</p>`).join('')
   }
 
   function applyNames() {
@@ -176,7 +191,7 @@
     $('#charName').textContent = name
     $('#plateName').textContent = name
     document.title = `${name}的房间`
-    ui.input.placeholder = `跟${name}说点什么……`
+    ui.input.placeholder = `跟${name}说点什么`
   }
 
   ui.mascot.addEventListener('click', async () => {
@@ -265,6 +280,8 @@
     S.convs = st.conversations
     S.mainId = st.mainId
     S.running = new Set(st.running)
+    S.memory = st.memory
+    S.schedules = st.schedules
     S.loaded = true
     applyNames()
     await loadConv(st.mainId)
@@ -280,6 +297,8 @@
       S.state = st.state
       S.convs = st.conversations
       S.running = new Set(st.running)
+      S.memory = st.memory
+      S.schedules = st.schedules
       updateRoom()
       updateBadges()
     } catch {}
@@ -364,7 +383,7 @@
     if (/\[超过 \d+ 秒被停止了/.test(t)) return ['bad', '超时了']
     return ['ok', '好了']
   }
-  const clipText = (t, n) => (t.length > n ? `${t.slice(0, n)}\n……（还有 ${t.length - n} 字）` : t)
+  const clipText = (t, n) => (t.length > n ? `${t.slice(0, n)}\n（后面还有 ${t.length - n} 字）` : t)
 
   function actCard(call, result) {
     const name = call.name
@@ -482,7 +501,7 @@
         const drafts = [...S.drafts.values()].filter((d) => d.convId === c.id)
         for (const d of drafts) {
           let inner = ''
-          if (d.reasoning) inner += `<details class="thought"${d.content ? '' : ' open'}><summary>${name}在想……</summary><div class="thought-body">${esc(d.reasoning.slice(-3000))}</div></details>`
+          if (d.reasoning) inner += `<details class="thought"${d.content ? '' : ' open'}><summary>${name}在想事情</summary><div class="thought-body">${esc(d.reasoning.slice(-3000))}</div></details>`
           const bs = bubbles(d.content)
           bs.forEach((b, i) => { inner += `<div class="bubble${b.code ? ' codeblock' : ''}${i === bs.length - 1 && !b.code ? ' cursor' : ''}">${b.html}</div>` })
           if (!d.content && !d.reasoning) inner += `<div class="bubble"><span class="typing"><i></i><i></i><i></i></span></div>`
@@ -492,7 +511,7 @@
           html += `<div class="row her"><div class="avatar">${head}</div><div class="stack"><div class="bubble"><span class="typing"><i></i><i></i><i></i></span></div></div></div>`
         }
       }
-      if (S.compacting) html += `<div class="strip info">正在把前面的聊天折成一页日记……</div>`
+      if (S.compacting) html += `<div class="strip info">正在把前面的聊天折成一页日记</div>`
       ui.live.innerHTML = html
       // 保持思考框滚在最新处
       $$('.live .thought-body').forEach((el) => { el.scrollTop = el.scrollHeight })
@@ -626,6 +645,7 @@
         renderLive()
         break
       case 'tool_done':
+        if (/^(remember|forget|schedule_message|cancel_schedule)$/.test(ev.message?.name || '')) refreshState()
         S.runningTools.delete(ev.callId)
         if (here) { addToConv(ev.message); renderHistory() }
         renderLive()
@@ -980,14 +1000,14 @@
           <label class="switch"><input type="checkbox" id="sDing"${store.get('yz-ding') !== 'off' ? ' checked' : ''}>她来找我时叮一声</label>
           <div class="field"><span class="field-label">房间里放的歌</span>
             <p class="hint">没有上传的话，收音机会现场生成一首日系小曲。想放自己喜欢的歌就传上来，支持 mp3、m4a、ogg、flac、wav。</p>
-            <div class="list" id="songList"><div class="empty">读取中……</div></div>
+            <div class="list" id="songList"><div class="empty">读取中</div></div>
             <label class="btn btn-yuzu" style="align-self:flex-start;margin-top:6px">传一首歌<input type="file" id="songFile" accept="audio/*" multiple hidden></label></div>
         </section>
 
         <section data-pane="keys" class="sheet-pane">
           <div class="field"><label for="sKey">DeepSeek 密钥</label>
             <p class="hint">${f.apiKey ? (f.apiKeyFromEnv ? '已经在服务器的 .env 里填好了。这里再填会覆盖它。' : '已经填过了。要换就重新填，留空就不改。') : '还没填。到 platform.deepseek.com 申请一个，以 sk- 开头。'}</p>
-            <input type="password" id="sKey" placeholder="${f.apiKey ? '已填好，留空不改' : 'sk-……'}" autocomplete="off"></div>
+            <input type="password" id="sKey" placeholder="${f.apiKey ? '已填好，留空不改' : 'sk- 开头的一串'}" autocomplete="off"></div>
           <div class="field"><label for="sPass">换个暗号</label><input type="password" id="sPass" placeholder="留空不改，至少 6 位" autocomplete="new-password"></div>
           <div class="field"><span class="field-label">手机通知</span>
             <p class="hint" id="pushHint">${window.isSecureContext ? '开了以后，网页关着她也能叫你。' : '通知要用 https 域名打开网站才能开（现在是 http）。部署说明里有怎么配域名。'}</p>
