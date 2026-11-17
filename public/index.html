@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#FFF1D0">
+<title>柚柚的房间</title>
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/fonts/kuaile/chinese-simplified-400.css">
+<link rel="stylesheet" href="/fonts/kuaile/latin-400.css">
+<link rel="stylesheet" href="/fonts/wenkai/lxgwwenkaiscreen.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- 门口 -->
+<section id="door" class="door-screen">
+  <div class="door-stage">
+    <div class="door-frame">
+      <div class="door" id="doorLeaf">
+        <div class="door-window"><span></span><span></span><span></span><span></span></div>
+        <div class="doorplate"><b id="plateName">柚柚</b><small>的房间</small></div>
+        <div class="knob"></div>
+        <div class="door-note" id="doorNote" hidden></div>
+      </div>
+      <div class="door-inside"></div>
+    </div>
+    <div class="doormat">WELCOME</div>
+  </div>
+  <form class="door-form" id="doorForm" autocomplete="on">
+    <label class="door-label" id="doorLabel" for="doorPass">对个暗号</label>
+    <input id="doorPass" name="password" type="password" autocomplete="current-password" placeholder="暗号是……">
+    <button class="btn btn-big btn-tomato" id="knockBtn" type="submit">咚咚，敲门</button>
+    <p class="door-err" id="doorErr" role="alert"></p>
+  </form>
+</section>
+
+<!-- 房间 -->
+<div id="app" class="app" hidden>
+  <aside class="room" id="room">
+    <div class="scene" id="scene">
+      <div class="window" id="window">
+        <div class="sky"></div>
+        <div class="sun"></div>
+        <div class="stars"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="cloud c1"></div><div class="cloud c2"></div>
+        <div class="window-cross"></div>
+        <div class="curtain left"></div><div class="curtain right"></div>
+      </div>
+      <div class="shelf"><span class="pot"></span><span class="books"></span></div>
+      <button class="mascot" id="mascot" type="button" aria-label="摸摸她"></button>
+      <div class="say" id="say"></div>
+      <div class="rug"></div>
+    </div>
+
+    <div class="plate">
+      <h1 id="charName">柚柚</h1>
+      <span class="mood-chip" id="moodChip">开心</span>
+      <span class="mobile-meter">好感 <i><b id="mmFill"></b></i></span>
+    </div>
+
+    <div class="meter" id="meter">
+      <div class="meter-top"><b>好感</b><span id="meterLevel">刚认识</span><span class="meter-num" id="meterNum">8</span></div>
+      <div class="meter-bar"><i id="meterFill"></i></div>
+    </div>
+
+    <div class="radio" id="radio">
+      <button class="radio-play" id="radioPlay" type="button" aria-label="播放或暂停音乐">
+        <svg viewBox="0 0 24 24" class="i-play"><path d="M7 4.5v15l13-7.5z"/></svg>
+        <svg viewBox="0 0 24 24" class="i-pause"><path d="M6 4h4.5v16H6zM13.5 4H18v16h-4.5z"/></svg>
+      </button>
+      <div class="radio-info">
+        <b id="radioTitle">柚子汽水</b>
+        <span id="radioSub">房间里的小收音机</span>
+      </div>
+      <button class="radio-next" id="radioNext" type="button" aria-label="下一首">
+        <svg viewBox="0 0 24 24"><path d="M5 5v14l9-7zM15 5h3.5v14H15z"/></svg>
+      </button>
+    </div>
+
+    <nav class="room-nav">
+      <button class="btn" data-open="diary" type="button"><svg viewBox="0 0 24 24"><path d="M5 3h11a3 3 0 0 1 3 3v15H8a3 3 0 0 1-3-3zM8 17h11M9 7h6"/></svg>日记本<em class="badge" id="diaryBadge" hidden></em></button>
+      <button class="btn" data-open="memory" type="button"><svg viewBox="0 0 24 24"><path d="M12 21s-8-4.8-8-11a4.5 4.5 0 0 1 8-2.8A4.5 4.5 0 0 1 20 10c0 6.2-8 11-8 11z"/></svg>回忆</button>
+      <button class="btn" data-open="settings" type="button"><svg viewBox="0 0 24 24"><path d="M4 20l4-1 11-11-3-3L5 16zM14 7l3 3"/></svg>小本本</button>
+    </nav>
+  </aside>
+
+  <main class="chat">
+    <header class="chat-head">
+      <button class="icon-btn only-mobile" data-open="diary" type="button" aria-label="日记本">
+        <svg viewBox="0 0 24 24"><path d="M5 3h11a3 3 0 0 1 3 3v15H8a3 3 0 0 1-3-3zM8 17h11"/></svg>
+      </button>
+      <div class="head-title">
+        <h2 id="convTitle">第一页</h2>
+        <span id="convSub"></span>
+      </div>
+      <button class="btn btn-small" id="compactBtn" type="button" title="把前面的聊天折成一页日记">整理</button>
+      <button class="btn btn-small btn-yuzu" id="newPageBtn" type="button">新一页</button>
+      <button class="icon-btn only-mobile" data-open="settings" type="button" aria-label="小本本">
+        <svg viewBox="0 0 24 24"><path d="M4 20l4-1 11-11-3-3L5 16zM14 7l3 3"/></svg>
+      </button>
+    </header>
+
+    <div class="scroller" id="scroller">
+      <div class="history" id="history"></div>
+      <div class="live" id="live"></div>
+    </div>
+
+    <button class="jump" id="jumpBtn" type="button" hidden>有新消息，往下看</button>
+
+    <form class="composer" id="composer">
+      <div class="attachments" id="attachments"></div>
+      <div class="composer-row">
+        <label class="icon-btn attach" title="发图片">
+          <input type="file" id="fileInput" accept="image/*" multiple hidden>
+          <svg viewBox="0 0 24 24"><path d="M4 6h16v13H4zM4 15l5-5 4 4 2-2 5 5M15.5 9.5h.01"/></svg>
+        </label>
+        <textarea id="input" rows="1" placeholder="跟她说点什么……" enterkeyhint="send"></textarea>
+        <button class="btn btn-send" id="sendBtn" type="submit">发出去</button>
+      </div>
+    </form>
+  </main>
+</div>
+
+<dialog id="sheet" class="sheet"></dialog>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script src="/mascot.js"></script>
+<script src="/music.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
