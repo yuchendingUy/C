@@ -68,6 +68,7 @@ neoForge {
             systemProperty 'scenerec.autotest.commandsAtStart', project.findProperty('commandsAtStart') ?: ''
             systemProperty 'scenerec.autotest.settleTicks', project.findProperty('settleTicks') ?: '100'
             systemProperty 'scenerec.autotest.switchCamera', project.findProperty('switchCamera') ?: 'false'
+            systemProperty 'scenerec.autotest.spin', project.findProperty('spin') ?: '0'
         }
 
         server {

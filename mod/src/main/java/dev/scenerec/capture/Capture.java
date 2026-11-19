@@ -389,8 +389,12 @@ public final class Capture {
             ca = fb.get(3);
         }
 
+        // The transform is recomputed from float uniforms every frame, so a mesh that doesn't move
+        // still shows rounding noise (~1e-6) when the camera moves; compare with a tolerance.
         if (!st.immediate && st.lastStateId == stateId && st.lastPass == pass
-            && st.lastTrans[0] == tx && st.lastTrans[1] == ty && st.lastTrans[2] == tz
+            && Math.abs(st.lastTrans[0] - tx) < TRANSLATION_EPS
+            && Math.abs(st.lastTrans[1] - ty) < TRANSLATION_EPS
+            && Math.abs(st.lastTrans[2] - tz) < TRANSLATION_EPS
             && sameXform(st.lastXform, x)) {
             out.u8(Rec.DRAW_SAME).i32(st.meshId);
             return;
@@ -413,9 +417,12 @@ public final class Capture {
         out.f32(cr).f32(cg).f32(cb).f32(ca);
     }
 
+    private static final double TRANSLATION_EPS = 2e-4;
+    private static final float MATRIX_EPS = 2e-5F;
+
     private static boolean sameXform(float[] a, float[] b) {
         for (int i = 0; i < 9; i++) {
-            if (a[i] != b[i]) {
+            if (Math.abs(a[i] - b[i]) > MATRIX_EPS) {
                 return false;
             }
         }

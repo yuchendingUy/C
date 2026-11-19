@@ -20,6 +20,8 @@ final class AutoTest {
     /** Run when the recording starts (e.g. assembling a physics structure so it moves while recorded). */
     private static final String COMMANDS_AT_START = System.getProperty("scenerec.autotest.commandsAtStart", "");
     private static final boolean SWITCH_CAMERA = Boolean.getBoolean("scenerec.autotest.switchCamera");
+    /** Degrees per client tick to turn the player while recording (exercises a moving camera). */
+    private static final float SPIN = Float.parseFloat(System.getProperty("scenerec.autotest.spin", "0"));
     private static final int SETTLE_TICKS = Integer.getInteger("scenerec.autotest.settleTicks", 100);
 
     private static int ticksInWorld;
@@ -68,6 +70,10 @@ final class AutoTest {
             SceneRec.LOGGER.info("SceneRec autotest: starting recording of {} frames", FRAMES);
             Recorder.start(Config.fps());
             run(mc, COMMANDS_AT_START);
+        }
+        if (started && Recorder.active() && SPIN != 0.0F && mc.player != null) {
+            mc.player.setYRot(mc.player.getYRot() + SPIN);
+            mc.player.setXRot(10.0F * (float) Math.sin(Recorder.framesWritten() / 40.0));
         }
         if (started && Recorder.active() && SWITCH_CAMERA && Recorder.framesWritten() >= FRAMES / 2
             && mc.options.getCameraType() == net.minecraft.client.CameraType.FIRST_PERSON) {
