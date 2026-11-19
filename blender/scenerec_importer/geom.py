@@ -57,7 +57,11 @@ class Format:
         out["positions"] = pos.astype(np.float64) if pos is not None else np.zeros((n, 3))
         col = self._field(raw, "Color", n)
         if col is not None:
-            out["colors"] = col.astype(np.float32) / 255.0
+            c = col.astype(np.float32) / 255.0
+            # Vertex colours (biome tints etc.) are sRGB-encoded like the textures they multiply;
+            # Blender float colour attributes are scene-linear.
+            c[:, :3] = srgb_to_linear(c[:, :3])
+            out["colors"] = c
         else:
             out["colors"] = np.ones((n, 4), dtype=np.float32)
         uv = self._field(raw, "UV0", n)
@@ -66,6 +70,11 @@ class Format:
         out["light"] = light.astype(np.int32) if light is not None else None
         out["tag"] = raw[:, self.tag_offset].copy() if self.tag_offset is not None else None
         return out
+
+
+def srgb_to_linear(c):
+    """IEC 61966-2-1 sRGB transfer function, inverse."""
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4).astype(np.float32)
 
 
 def faces_for_mode(mode, n):

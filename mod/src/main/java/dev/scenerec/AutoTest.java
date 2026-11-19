@@ -22,6 +22,7 @@ final class AutoTest {
     private static final boolean SWITCH_CAMERA = Boolean.getBoolean("scenerec.autotest.switchCamera");
     /** Degrees per client tick to turn the player while recording (exercises a moving camera). */
     private static final float SPIN = Float.parseFloat(System.getProperty("scenerec.autotest.spin", "0"));
+    private static final boolean HIDE_GUI = Boolean.getBoolean("scenerec.autotest.hideGui");
     private static final int SETTLE_TICKS = Integer.getInteger("scenerec.autotest.settleTicks", 100);
 
     private static int ticksInWorld;
@@ -67,6 +68,9 @@ final class AutoTest {
         }
         if (!started && ticksInWorld >= SETTLE_TICKS) {
             started = true;
+            if (HIDE_GUI) {
+                mc.options.hideGui = true; // also hides the first-person hand (GameRenderer#renderItemInHand)
+            }
             SceneRec.LOGGER.info("SceneRec autotest: starting recording of {} frames", FRAMES);
             Recorder.start(Config.fps());
             run(mc, COMMANDS_AT_START);

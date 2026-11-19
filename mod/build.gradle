@@ -62,13 +62,14 @@ neoForge {
         autotest {
             client()
             gameDirectory = project.file('run')
-            programArguments.addAll '--quickPlaySingleplayer', 'test'
+            programArguments.addAll '--quickPlaySingleplayer', (project.findProperty('world') ?: 'test')
             systemProperty 'scenerec.autotest.frames', project.findProperty('frames') ?: '60'
             systemProperty 'scenerec.autotest.commands', project.findProperty('commands') ?: ''
             systemProperty 'scenerec.autotest.commandsAtStart', project.findProperty('commandsAtStart') ?: ''
             systemProperty 'scenerec.autotest.settleTicks', project.findProperty('settleTicks') ?: '100'
             systemProperty 'scenerec.autotest.switchCamera', project.findProperty('switchCamera') ?: 'false'
             systemProperty 'scenerec.autotest.spin', project.findProperty('spin') ?: '0'
+            systemProperty 'scenerec.autotest.hideGui', project.findProperty('hideGui') ?: 'false'
         }
 
         server {
