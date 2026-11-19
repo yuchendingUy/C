@@ -1,4 +1,12 @@
-build/
-build-*/
-ref/
-dist/
+# Gradle / IDE
+mod/.gradle/
+mod/build/
+mod/run/
+mod/repo/
+mod/.idea/
+mod/out/
+*.iml
+.DS_Store
+__pycache__/
+*.pyc
+/dist/
