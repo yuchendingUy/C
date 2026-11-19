@@ -328,7 +328,7 @@ class Builder:
                 if dec["n"] == 0 or len(counts) == 0:
                     continue
                 _, _, _, tr, m9 = r["draws"][0]
-                verts = geom.transform_points(dec["positions"], m9, tr, self.origin)
+                verts = geom.separate_coplanar(geom.transform_points(dec["positions"], m9, tr, self.origin), counts, idx)
                 for a, b in r["intervals"]:
                     if not (a == 0 and b >= self.total - 1):
                         whole = False
@@ -411,7 +411,7 @@ class Builder:
         dec, counts, idx, em = _decode_retained(rec, r, st)
         if dec["n"] == 0 or len(counts) == 0:
             return
-        local = geom.to_blender(dec["positions"])
+        local = geom.separate_coplanar(geom.to_blender(dec["positions"]), counts, idx)
         me = _mesh_from_arrays("MC moving %d" % mid, local, counts, idx, dec["uv"], dec["colors"], em)
         me.materials.append(self.material(state_id))
         obj = bpy.data.objects.new(me.name, me)
@@ -537,7 +537,7 @@ class Builder:
                 counts, idx = geom.faces_for_mode(m["mode"], dec["n"])
                 if len(counts) == 0:
                     continue
-                verts = geom.transform_points(dec["positions"], p["matrix"], p["translation"], self.origin)
+                verts = geom.separate_coplanar(geom.transform_points(dec["positions"], p["matrix"], p["translation"], self.origin), counts, idx)
                 em = geom.vertex_emission(dec, m["mode"], st, rec.sprite_lookup(st["texture"]), rec.sprite_emission)
                 uv = dec["uv"] if dec["uv"] is not None else np.zeros((dec["n"], 2), np.float32)
                 key = (p["state"], p["pass"])

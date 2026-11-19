@@ -101,6 +101,39 @@ def transform_points(pos, matrix9, translation, origin):
     return to_blender(w)
 
 
+# Overlay quads (grass block sides, some modded models) sit exactly on top of the quad below them.
+# A rasteriser draws both in order; a path tracer continues a ray through a transparent hit with
+# tmin = nextafter(t) (Cycles: integrator/shade_surface.h), so the quad underneath at the very same
+# distance is skipped and shows as a hole. Push every later duplicate out along its normal.
+COPLANAR_STEP = 0.002
+
+
+def separate_coplanar(verts, counts, idx):
+    """Offsets same-facing quads that share all four corners (in place, Blender-space verts)."""
+    if len(counts) == 0 or not np.all(counts == 4):
+        return verts
+    q = verts[idx].reshape(-1, 4, 3)
+    nrm = np.cross(q[:, 1] - q[:, 0], q[:, 2] - q[:, 0])
+    ln = np.linalg.norm(nrm, axis=1)
+    ok = ln > 1e-12
+    nrm[ok] /= ln[ok, None]
+    key = np.concatenate([np.round(np.sort(q.reshape(-1, 12), axis=1), 4), np.round(nrm, 2)], axis=1)
+    _, inv, cnt = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+    inv = inv.reshape(-1)
+    dup = cnt[inv] > 1
+    if not dup.any():
+        return verts
+    order = np.argsort(inv, kind="stable")          # quads grouped, in draw order within a group
+    sorted_inv = inv[order]
+    first = np.searchsorted(sorted_inv, sorted_inv, side="left")
+    rank = np.empty(len(inv), dtype=np.int64)
+    rank[order] = np.arange(len(inv)) - first      # 0 for the first quad of a group, 1, 2, ...
+    off = (rank * COPLANAR_STEP)[:, None] * nrm
+    off[~dup | ~ok] = 0.0
+    verts[idx] += np.repeat(off, 4, axis=0)
+    return verts
+
+
 class SpriteLookup:
     """Maps atlas UVs to sprite indices with a per-pixel index image."""
 
